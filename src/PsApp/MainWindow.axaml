@@ -1,0 +1,195 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="PsApp.MainWindow"
+        Title="PoE2 Smoother"
+        Width="1180" Height="780"
+        MinWidth="980" MinHeight="640"
+        WindowStartupLocation="CenterScreen"
+        Background="#14161A"
+        FontSize="16">
+
+  <DockPanel Margin="16">
+
+    <Border DockPanel.Dock="Top" Background="#1C2026" CornerRadius="10" Padding="16" Margin="0,0,0,12">
+      <Grid ColumnDefinitions="*,Auto">
+        <StackPanel Spacing="4">
+          <TextBlock Text="PoE2 Smoother" FontSize="26" FontWeight="Bold" Foreground="#F2F4F8"/>
+          <TextBlock x:Name="StatusText"
+                     Text="正在检测游戏… / Detecting game…"
+                     Foreground="#AAB2C0" TextWrapping="Wrap"/>
+        </StackPanel>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+          <Button x:Name="DetectButton" Content="检测 / Detect" Click="OnDetect"
+                  Height="46" Padding="18,0" FontSize="16"/>
+          <Button x:Name="RefreshButton" Content="刷新 / Refresh" Click="OnRefresh"
+                  Height="46" Padding="18,0" FontSize="16"/>
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <TabControl>
+
+      <TabItem Header="主页 / Home">
+        <ScrollViewer>
+          <StackPanel Spacing="12" Margin="4">
+            <TextBlock Text="游戏路径 / Game path" FontWeight="SemiBold"/>
+            <TextBox x:Name="GamePathBox" IsReadOnly="True" Height="42" FontSize="15"/>
+
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <Button x:Name="BuildPackButton" Content="生成规则包 / Build rules"
+                      Click="OnBuildRules" Height="48" Padding="20,0" FontSize="16"/>
+              <Button x:Name="ApplyButton" Content="应用 / Apply"
+                      Click="OnApply" Height="48" Padding="28,0" FontSize="16"
+                      Background="#2D6CDF" Foreground="White"/>
+              <Button x:Name="RestoreButton" Content="还原 / Restore"
+                      Click="OnRestore" Height="48" Padding="24,0" FontSize="16"
+                      Background="#5A3B3B" Foreground="White"/>
+            </StackPanel>
+
+            <TextBlock x:Name="PackText" TextWrapping="Wrap" Foreground="#AAB2C0"/>
+            <TextBlock x:Name="StateText" TextWrapping="Wrap" Foreground="#AAB2C0"/>
+
+            <TextBlock Text="日志 / Log" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            <TextBox x:Name="LogBox" IsReadOnly="True" AcceptsReturn="True"
+                     Height="280" FontFamily="monospace" FontSize="13"
+                     TextWrapping="NoWrap"/>
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+
+      <TabItem Header="特效 / Effects">
+        <Grid RowDefinitions="Auto,*,Auto" Margin="4">
+          <StackPanel Grid.Row="0" Spacing="10" Margin="0,0,0,10">
+            <StackPanel Orientation="Horizontal" Spacing="12">
+              <TextBlock Text="预设 / Preset" VerticalAlignment="Center" FontWeight="SemiBold"/>
+              <ComboBox x:Name="PresetBox" Width="180" Height="42"
+                        SelectionChanged="OnPresetChanged"/>
+              <CheckBox x:Name="ExperimentalBox" Content="实验性资源 / Experimental assets"
+                        VerticalAlignment="Center"/>
+            </StackPanel>
+
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <TextBox x:Name="CategorySearchBox" Width="340" Height="40"
+                       Watermark="搜索类别/路径 / Search categories or paths"
+                       TextChanged="OnCategorySearchChanged"/>
+              <ComboBox x:Name="GroupFilterBox" Width="200" Height="40"
+                        SelectionChanged="OnGroupFilterChanged"/>
+              <Button Content="清除 / Clear" Click="OnClearSearch" Height="40" Padding="14,0"
+                      ToolTip.Tip="清除搜索和分类筛选 / Clear search and group filter"/>
+            </StackPanel>
+
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <Button Content="全选 / Select all" Click="OnSelectAll" Height="40" Padding="14,0"
+                      ToolTip.Tip="选择所有类别 / Select all categories"/>
+              <Button Content="全不选 / Clear" Click="OnClearAll" Height="40" Padding="14,0"
+                      ToolTip.Tip="取消所有类别 / Clear all categories"/>
+              <TextBlock x:Name="SelectionText" VerticalAlignment="Center" Foreground="#AAB2C0"/>
+            </StackPanel>
+          </StackPanel>
+
+          <Grid Grid.Row="1">
+            <ScrollViewer Background="#1C2026" CornerRadius="8" Padding="8">
+              <ItemsControl x:Name="CategoryGroupList">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Grid ColumnDefinitions="Auto,*" Margin="0,4">
+                      <CheckBox Grid.Column="0"
+                                IsChecked="{Binding IsSelected, Mode=TwoWay}"
+                                IsThreeState="True"
+                                VerticalAlignment="Center"
+                                Margin="4,0,8,0"
+                                Click="OnGroupCheckBoxClick"
+                                ToolTip.Tip="选择整组 / Select group"/>
+                      <Expander Grid.Column="1" Header="{Binding Header}" IsExpanded="False">
+                        <ItemsControl ItemsSource="{Binding Categories}">
+                          <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                              <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay}" Margin="8,3">
+                                <StackPanel Orientation="Horizontal" Spacing="12">
+                                  <TextBlock Text="{Binding Label}" Width="620" TextTrimming="CharacterEllipsis"/>
+                                  <TextBlock Text="{Binding CountText}" Foreground="#8E97A6"/>
+                                </StackPanel>
+                              </CheckBox>
+                            </DataTemplate>
+                          </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                      </Expander>
+                    </Grid>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </ScrollViewer>
+
+            <TextBlock x:Name="FilterEmptyText" IsVisible="False"
+                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                       Foreground="#8E97A6" FontSize="18"
+                       Text="没有匹配的类别 / No matching categories"/>
+          </Grid>
+
+          <TextBlock Grid.Row="2" x:Name="EffectsHint" Margin="0,8,0,0"
+                     Foreground="#AAB2C0" TextWrapping="Wrap"
+                     Text="按分类分组显示；搜索会匹配类别名称、ID 和规则路径。Safe 默认只处理玩家技能/MTX，保留怪物和危险机制。"/>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="忽略列表 / Ignore list">
+        <Grid RowDefinitions="Auto,*,Auto" Margin="4">
+          <TextBlock Grid.Row="0" TextWrapping="Wrap" Foreground="#AAB2C0" Margin="0,0,0,8"
+                     Text="每行一个路径前缀；# 开头为注释。列表中的路径不会被修改。"/>
+          <TextBox Grid.Row="1" x:Name="IgnoreBox" AcceptsReturn="True"
+                   FontFamily="monospace" FontSize="13" TextWrapping="NoWrap"/>
+          <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8" Margin="0,10,0,0">
+            <Button Content="保存 / Save" Click="OnSaveIgnore" Height="44" Padding="18,0"/>
+            <Button Content="重新载入 / Reload" Click="OnReloadIgnore" Height="44" Padding="18,0"/>
+            <Button Content="恢复默认 / Reset" Click="OnResetIgnore" Height="44" Padding="18,0"/>
+          </StackPanel>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="档案 / Profiles">
+        <Grid RowDefinitions="Auto,*,Auto" Margin="4">
+          <StackPanel Grid.Row="0" Spacing="10">
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <TextBlock Text="名称 / Name" VerticalAlignment="Center"/>
+              <TextBox x:Name="ProfileNameBox" Width="320" Height="42"/>
+              <Button Content="保存 / Save" Click="OnSaveProfile" Height="42" Padding="18,0"/>
+              <Button Content="载入 / Load" Click="OnLoadProfile" Height="42" Padding="18,0"/>
+              <Button Content="删除 / Delete" Click="OnDeleteProfile" Height="42" Padding="18,0"/>
+            </StackPanel>
+            <TextBlock TextWrapping="Wrap" Foreground="#AAB2C0"
+                       Text="档案保存当前预设、类别选择和忽略列表。"/>
+          </StackPanel>
+
+          <ListBox Grid.Row="1" x:Name="ProfileList" Margin="0,12,0,0"
+                   SelectionChanged="OnProfileSelected"/>
+
+          <TextBlock Grid.Row="2" x:Name="ProfileStatus" Margin="0,10,0,0"
+                     Foreground="#AAB2C0" TextWrapping="Wrap"/>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="设置 / Settings">
+        <ScrollViewer>
+          <StackPanel Spacing="12" Margin="4">
+            <TextBlock Text="语言 / Language" FontWeight="SemiBold"/>
+            <ComboBox x:Name="LanguageBox" Width="220" Height="42"
+                      SelectionChanged="OnLanguageChanged"/>
+
+            <TextBlock Text="应用数据目录 / App data" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            <TextBox x:Name="DataDirBox" IsReadOnly="True" Height="40"/>
+
+            <TextBlock Text="规则包 / Rule pack" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            <TextBox x:Name="RulePackBox" IsReadOnly="True" Height="40"/>
+
+            <TextBlock Text="日志文件 / Log file" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            <TextBox x:Name="LogPathBox" IsReadOnly="True" Height="40"/>
+
+            <TextBlock TextWrapping="Wrap" Foreground="#AAB2C0" Margin="0,12,0,0"
+                       Text="修改客户端文件存在风险；请先关闭游戏并保留备份。游戏更新后需要重新生成规则包并应用。"/>
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+
+    </TabControl>
+  </DockPanel>
+</Window>

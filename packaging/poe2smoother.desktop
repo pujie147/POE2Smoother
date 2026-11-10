@@ -1,0 +1,13 @@
+#!/usr/bin/env xdg-open
+[Desktop Entry]
+Type=Application
+Name=PoE2 Smoother
+Name[zh_CN]=PoE2 特效移除
+Comment=Path of Exile 2 effect removal tool for SteamOS
+Comment[zh_CN]=流放之路 2 特效移除工具（SteamOS）
+Exec=poe2smoother
+Icon=poe2smoother
+Terminal=false
+Categories=Utility;Game;
+Keywords=Path of Exile;PoE2;effects;SteamOS;
+StartupWMClass=poe2smoother

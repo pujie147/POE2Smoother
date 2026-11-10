@@ -1,0 +1,40 @@
+<Project>
+
+  <PropertyGroup>
+    <LangVersion>12.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Deterministic>true</Deterministic>
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <LibGGPK3Dir Condition="'$(RuntimeIdentifier)' == 'linux-x64'">$(MSBuildThisFileDirectory)vendor/libggpk3/linux-x64</LibGGPK3Dir>
+    <LibGGPK3Dir Condition="'$(LibGGPK3Dir)' == '' and $([MSBuild]::IsOSPlatform('Linux'))">$(MSBuildThisFileDirectory)vendor/libggpk3/linux-x64</LibGGPK3Dir>
+    <LibGGPK3Dir Condition="'$(LibGGPK3Dir)' == ''">$(MSBuildThisFileDirectory)vendor/libggpk3/win-x64</LibGGPK3Dir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="LibBundle3" Condition="Exists('$(LibGGPK3Dir)/LibBundle3.dll')">
+      <HintPath>$(LibGGPK3Dir)/LibBundle3.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="SystemExtensions" Condition="Exists('$(LibGGPK3Dir)/SystemExtensions.dll')">
+      <HintPath>$(LibGGPK3Dir)/SystemExtensions.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(OutputType)' == 'Exe'">
+    <None Include="$(LibGGPK3Dir)/liboo2core.so"
+          Condition="Exists('$(LibGGPK3Dir)/liboo2core.so')"
+          Link="liboo2core.so"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
+    <None Include="$(LibGGPK3Dir)/oo2core.dll"
+          Condition="Exists('$(LibGGPK3Dir)/oo2core.dll')"
+          Link="oo2core.dll"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

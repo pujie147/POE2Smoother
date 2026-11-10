@@ -1,0 +1,39 @@
+# Build output
+**/bin/
+**/obj/
+build/
+dist/
+
+# Test scratch
+.test/
+.test-all/
+gui.png
+
+# Large local analysis / tooling downloads
+# vendor/* (not vendor/): git cannot re-include a file once its parent
+# directory is excluded, so the whitelist below needs the directory left open.
+vendor/*
+
+doc-bk/
+
+# Keep only the LibGGPK3 assemblies/native libraries required by the build
+# (drops linux-x64.zip / win-x64.zip and every other vendored payload)
+!vendor/libggpk3/
+vendor/libggpk3/*
+!vendor/libggpk3/linux-x64/
+!vendor/libggpk3/win-x64/
+
+vendor/libggpk3/linux-x64/*
+!vendor/libggpk3/linux-x64/LibBundle3.dll
+!vendor/libggpk3/linux-x64/SystemExtensions.dll
+!vendor/libggpk3/linux-x64/liboo2core.so
+
+vendor/libggpk3/win-x64/*
+!vendor/libggpk3/win-x64/LibBundle3.dll
+!vendor/libggpk3/win-x64/SystemExtensions.dll
+!vendor/libggpk3/win-x64/oo2core.dll
+
+# IDE
+.vs/
+.vscode/
+*.user
