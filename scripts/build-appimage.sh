@@ -19,7 +19,9 @@ if [ "$(uname -s)" != "Linux" ]; then
 fi
 
 if [ "$SKIP_PUBLISH" -eq 0 ]; then
-  "$ROOT/scripts/build-linux.sh" "$PUBLISH"
+  # bash, not exec: build-linux.sh is tracked as 0644, so a fresh clone has no
+  # execute bit on it and a direct invocation fails with "permission denied"
+  bash "$ROOT/scripts/build-linux.sh" "$PUBLISH"
 elif [ ! -d "$PUBLISH" ]; then
   echo "Missing $PUBLISH. Run scripts/build-linux.sh first, or omit --no-publish."
   exit 1
@@ -40,6 +42,13 @@ cp "$ROOT/packaging/poe2smoother.svg" "$APPDIR/poe2smoother.svg"
 cp "$ROOT/packaging/poe2smoother.desktop" "$APPDIR/poe2smoother.desktop"
 cp "$ROOT/packaging/poe2smoother.desktop" "$APPDIR/usr/share/applications/poe2smoother.desktop"
 
+# appimagetool creates .DirIcon from a top-level poe2smoother.png. It only warns
+# when the icon is missing today, but says it will refuse to pack in a future
+# release, so render one from the SVG whenever rsvg-convert is available.
+if command -v rsvg-convert >/dev/null 2>&1; then
+  rsvg-convert -w 256 -h 256 "$ROOT/packaging/poe2smoother.svg" -o "$APPDIR/poe2smoother.png"
+fi
+
 cat > "$APPDIR/AppRun" <<'EOF'
 #!/bin/sh
 HERE="$(dirname "$(readlink -f "$0")")"
@@ -47,6 +56,13 @@ export LD_LIBRARY_PATH="$HERE/usr/lib:$HERE/usr/bin${LD_LIBRARY_PATH:+:$LD_LIBRA
 exec "$HERE/usr/bin/poe2smoother" "$@"
 EOF
 chmod +x "$APPDIR/AppRun" "$APPDIR/usr/bin/poe2smoother"
+
+# appimagetool (build 370+) refuses AppDirs whose files are not world-readable,
+# and the umask here turns git's 0755 modes into 0744. Normalise: directories and
+# the two entry points executable for everyone, everything else plain data.
+find "$APPDIR" -type d -exec chmod 0755 {} +
+find "$APPDIR" -type f -exec chmod 0644 {} +
+chmod 0755 "$APPDIR/AppRun" "$APPDIR/usr/bin/poe2smoother"
 
 APPIMAGETOOL_BIN="$(command -v appimagetool || true)"
 APPIMAGETOOL_ARGS=""

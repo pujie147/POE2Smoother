@@ -3,6 +3,7 @@ using System.Reflection;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless;
+using Avalonia.LogicalTree;
 using Avalonia.Threading;
 using PsApp;
 using PsRules;
@@ -252,6 +253,30 @@ refreshStatus.Invoke(window, null);
 Dispatcher.UIThread.RunJobs();
 if (!selectionText.Text!.Contains("已选 3/4"))
     throw new Exception($"safe should re-select 3 of 4: {selectionText.Text}");
+
+// ---------------------------------------------------------------------------
+// Sponsor tab: sits last, right after Settings, and its embedded QR resolves
+// ---------------------------------------------------------------------------
+var tabControl = window.GetLogicalDescendants().OfType<TabControl>().Single();
+var tabs = tabControl.Items.OfType<TabItem>().ToList();
+if (tabs.Count != 6)
+    throw new Exception($"expected 6 tabs, got {tabs.Count}");
+if (tabs[^1].Header is not string sponsorHeader || !sponsorHeader.Contains("赞助"))
+    throw new Exception($"last tab should be the sponsor tab: {tabs[^1].Header}");
+if (tabs[^2].Header is not string settingsHeader || !settingsHeader.Contains("设置"))
+    throw new Exception($"sponsor tab must follow settings: {tabs[^2].Header}");
+
+tabControl.SelectedItem = tabs[^1];
+Dispatcher.UIThread.RunJobs();
+
+// A bad avares:// URI throws while the window's XAML loads, so reaching here with
+// a set Source means Assets/sponsor-alipay.jpg is embedded (AvaloniaResource item).
+// The headless platform decodes every bitmap as 1x1, so pixel size is not assertable.
+var images = window.GetLogicalDescendants().OfType<Image>().ToList();
+if (images.Count != 1)
+    throw new Exception($"expected exactly one image (the sponsor QR), got {images.Count}");
+if (images[0].Source == null)
+    throw new Exception("sponsor QR did not load from avares://");
 
 window.Show();
 Dispatcher.UIThread.RunJobs();

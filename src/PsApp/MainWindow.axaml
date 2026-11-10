@@ -190,6 +190,26 @@
         </ScrollViewer>
       </TabItem>
 
+      <TabItem Header="赞助 / Sponsor">
+        <Grid RowDefinitions="Auto,*,Auto" Margin="4">
+          <TextBlock Grid.Row="0" HorizontalAlignment="Center" TextAlignment="Center"
+                     TextWrapping="Wrap" Foreground="#AAB2C0"
+                     Text="本工具免费开源。如果它帮到了你，欢迎用支付宝扫码支持一下——完全自愿，不影响任何功能。&#10;This tool is free and open source. If it has been useful, a voluntary Alipay tip is appreciated — nothing is locked behind it."/>
+
+          <Border Grid.Row="1" Background="#1C2026" CornerRadius="8" Padding="10"
+                  Margin="0,12" HorizontalAlignment="Center" VerticalAlignment="Center">
+            <Viewbox Stretch="Uniform" StretchDirection="DownOnly">
+              <Image Source="avares://poe2smoother/Assets/sponsor-alipay.jpg"
+                     ToolTip.Tip="支付宝收款码 / Alipay donation QR"/>
+            </Viewbox>
+          </Border>
+
+          <TextBlock Grid.Row="2" HorizontalAlignment="Center" TextAlignment="Center"
+                     TextWrapping="Wrap" Foreground="#8E97A6"
+                     Text="手机直接对准屏幕扫码；电脑端可截图后用支付宝“扫一扫 → 相册”识别。/ Scan the code on screen with your phone, or take a screenshot and use Alipay's scan-from-album."/>
+        </Grid>
+      </TabItem>
+
     </TabControl>
   </DockPanel>
 </Window>
