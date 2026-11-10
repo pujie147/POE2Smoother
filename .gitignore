@@ -33,6 +33,15 @@ vendor/libggpk3/win-x64/*
 !vendor/libggpk3/win-x64/SystemExtensions.dll
 !vendor/libggpk3/win-x64/oo2core.dll
 
+# Keep the AppImage packer and the runtime it embeds: scripts/build-appimage.sh
+# falls back to vendor/appimage/appimagetool-x86_64.AppImage when appimagetool is
+# not on PATH, so a fresh clone must be able to build the AppImage without a
+# manual download. Nothing else in this directory is needed.
+!vendor/appimage/
+vendor/appimage/*
+!vendor/appimage/appimagetool-x86_64.AppImage
+!vendor/appimage/runtime-x86_64
+
 # IDE
 .vs/
 .vscode/
