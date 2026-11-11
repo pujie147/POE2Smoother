@@ -45,6 +45,65 @@ public static class BackupManager
             Directory.Delete(dir, recursive: true);
     }
 
+    /// <summary>
+    /// Deletes custom bundle files that no live index record references anymore.
+    /// Referenced bundles (e.g. files still suppressed, or edits made by other tools)
+    /// are kept, so this is safe after a per-file restore that skipped some files.
+    /// Returns the number of files deleted.
+    /// </summary>
+    public static int DeleteOrphanCustomBundles(string bundlesDir, IEnumerable<string?> referencedBundlePaths)
+    {
+        var dir = CustomBundleDir(bundlesDir);
+        if (!Directory.Exists(dir))
+            return 0;
+
+        var referenced = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in referencedBundlePaths)
+        {
+            if (!string.IsNullOrWhiteSpace(p))
+                referenced.Add(NormalizeRelative(bundlesDir, p));
+        }
+
+        var deleted = 0;
+        foreach (var file in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
+        {
+            var rel = NormalizeRelative(bundlesDir, file);
+            if (referenced.Contains(rel))
+                continue;
+            try
+            {
+                File.Delete(file);
+                deleted++;
+            }
+            catch
+            {
+                // best effort: leave the file, it stays orphaned
+            }
+        }
+
+        if (deleted > 0 && !Directory.EnumerateFileSystemEntries(dir, "*", SearchOption.AllDirectories).Any())
+        {
+            try
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
+        return deleted;
+    }
+
+    private static string NormalizeRelative(string bundlesDir, string path)
+    {
+        var rel = Path.IsPathRooted(path)
+            ? Path.GetRelativePath(Path.GetFullPath(bundlesDir), path)
+            : path;
+        return rel.Replace(Path.DirectorySeparatorChar, '/').Replace(Path.AltDirectorySeparatorChar, '/');
+    }
+
     public static void DeleteBackup(string backupPath)
     {
         if (File.Exists(backupPath))

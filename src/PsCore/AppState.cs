@@ -4,7 +4,7 @@ namespace PsCore;
 
 public sealed class AppState
 {
-    public int SchemaVersion { get; set; } = 1;
+    public int SchemaVersion { get; set; } = 2;
     public string GameRoot { get; set; } = "";
     public string IndexPath { get; set; } = "";
     public string OriginalIndexSha256 { get; set; } = "";
@@ -16,6 +16,33 @@ public sealed class AppState
     public int FileCount { get; set; }
     public DateTimeOffset AppliedAt { get; set; } = DateTimeOffset.UtcNow;
     public List<string> CustomBundleFiles { get; set; } = [];
+
+    /// <summary>
+    /// Per-file fingerprints captured at apply time (schema v2). Restore uses these to
+    /// re-redirect a file back to its original bundle coordinates only while the live
+    /// content still matches what this tool wrote; game-updated files are skipped.
+    /// Older state files deserialize this as an empty list.
+    /// </summary>
+    public List<PatchedFileEntry> PatchedFiles { get; set; } = [];
+}
+
+public sealed class PatchedFileEntry
+{
+    public string Path { get; set; } = "";
+    public string Strategy { get; set; } = "";
+
+    // Where the original content lives in the official bundles (redirect-back target).
+    public string OriginalBundlePath { get; set; } = "";
+    public long OriginalOffset { get; set; }
+    public long OriginalSize { get; set; }
+
+    // Identity of the bytes this tool wrote at apply time (consistency check).
+    public long AppliedSize { get; set; }
+    public string AppliedSha256 { get; set; } = "";
+
+    // Where the applied content was stored (custom bundle), for diagnostics.
+    public string AppliedBundlePath { get; set; } = "";
+    public long AppliedOffset { get; set; }
 }
 
 public static class StateStore

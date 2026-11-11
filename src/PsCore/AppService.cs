@@ -1,4 +1,5 @@
 using System.Net.Http;
+using LibBundle3.Records;
 using PsRules;
 
 namespace PsCore;
@@ -41,6 +42,13 @@ public sealed class RestoreResult
     public bool RestoredIndex { get; init; }
     public bool CleanedCustomBundles { get; init; }
     public string Message { get; init; } = "";
+
+    // Per-file restore details (only meaningful when PerFile = true).
+    public bool PerFile { get; init; }
+    public int FilesRestored { get; init; }
+    public int FilesSkipped { get; init; }
+    public int FilesUnresolved { get; init; }
+    public IReadOnlyList<string> SkippedPaths { get; init; } = [];
 }
 
 public sealed class StatusResult
@@ -145,6 +153,7 @@ public sealed class AppService
         AppLog.Info(_paths, $"Backup created: {backupPath}");
 
         var committed = false;
+        var patchedFiles = new List<PatchedFileEntry>();
         try
         {
             using (var work = IndexSession.OpenWorkCopy(request.Game.IndexPath, request.Game.BundlesDir))
@@ -162,7 +171,24 @@ public sealed class AppService
                         ? ReplacementFactory.Create(record.Read().ToArray(), change.Path, change.Strategy)
                         : ReplacementFactory.Create([], change.Path, change.Strategy);
 
+                    // Capture the original coordinates before Write() rewrites the record,
+                    // so a later per-file restore can redirect back into the official bundle.
+                    var entry = new PatchedFileEntry
+                    {
+                        Path = change.Path,
+                        Strategy = change.Strategy.ToString(),
+                        OriginalBundlePath = record.BundleRecord?.Path ?? "",
+                        OriginalOffset = record.Offset,
+                        OriginalSize = record.Size,
+                        AppliedSize = replacement.LongLength
+                    };
+
                     record.Write(replacement);
+
+                    entry.AppliedSha256 = HashUtil.Sha256Bytes(replacement);
+                    entry.AppliedBundlePath = record.BundleRecord?.Path ?? "";
+                    entry.AppliedOffset = record.Offset;
+                    patchedFiles.Add(entry);
 
                     done++;
                     if (done == total || done % reportStep == 0)
@@ -187,7 +213,8 @@ public sealed class AppService
                 RulePackPath = request.RulePackPath,
                 Preset = request.Preset,
                 FileCount = plan.Changes.Count,
-                CustomBundleFiles = BackupManager.ListCustomBundleFiles(request.Game.BundlesDir).ToList()
+                CustomBundleFiles = BackupManager.ListCustomBundleFiles(request.Game.BundlesDir).ToList(),
+                PatchedFiles = patchedFiles
             };
             StateStore.Save(_paths, newState);
             BackupManager.Prune(_paths.BackupsDir, 10);
@@ -237,20 +264,41 @@ public sealed class AppService
             backup = DownloadIndex(request.IndexUrl, request.Game.BundlesDir);
         var cleaned = false;
 
-        if (BackupManager.HasCustomBundles(request.Game.BundlesDir))
-        {
-            BackupManager.DeleteCustomBundles(request.Game.BundlesDir);
-            cleaned = true;
-        }
-
         if (request.CleanOnly)
         {
+            if (BackupManager.HasCustomBundles(request.Game.BundlesDir))
+            {
+                BackupManager.DeleteCustomBundles(request.Game.BundlesDir);
+                cleaned = true;
+            }
             StateStore.Delete(_paths);
             return new RestoreResult
             {
                 CleanedCustomBundles = cleaned,
                 Message = "Custom bundles removed (index unchanged)."
             };
+        }
+
+        // Safety-first per-file restore: when the state carries per-file fingerprints (schema v2),
+        // the index drifted from what this tool produced (game update?), and the user did not ask
+        // for a whole-index overwrite, restore only files whose live content still matches exactly
+        // what we wrote. Files the game changed are skipped, so an update is never downgraded.
+        if (state is { PatchedFiles.Count: > 0 } &&
+            !request.Force &&
+            string.IsNullOrWhiteSpace(request.BackupPath) &&
+            string.IsNullOrWhiteSpace(request.IndexUrl) &&
+            !currentHash.Equals(state.AppliedIndexSha256, StringComparison.OrdinalIgnoreCase) &&
+            File.Exists(request.Game.IndexPath))
+        {
+            return RestorePerFile(state, request.Game);
+        }
+
+        // Whole-index paths below: the backup replaces the index entirely, so custom bundles
+        // are always orphans from that moment on and can go first.
+        if (BackupManager.HasCustomBundles(request.Game.BundlesDir))
+        {
+            BackupManager.DeleteCustomBundles(request.Game.BundlesDir);
+            cleaned = true;
         }
 
         if (string.IsNullOrWhiteSpace(backup))
@@ -291,6 +339,153 @@ public sealed class AppService
             CleanedCustomBundles = cleaned,
             Message = $"Restored {request.Game.IndexPath}"
         };
+    }
+
+    /// <summary>
+    /// Restores every file this tool suppressed, but only those still consistent with the bytes
+    /// it wrote at apply time: their record is redirected back to the original coordinates in the
+    /// official bundle (no data is rewritten, so the custom bundle files become orphans and are
+    /// dropped afterwards). Files whose content no longer matches (game update, external edit)
+    /// are skipped and keep their current content — that is what prevents post-update downgrades.
+    /// </summary>
+    private RestoreResult RestorePerFile(AppState state, GameLocation game)
+    {
+        var restored = 0;
+        var skipped = new List<string>();
+        var unresolved = new List<PatchedFileEntry>();
+
+        using (var work = IndexSession.OpenWorkCopy(game.IndexPath, game.BundlesDir))
+        {
+            // Redirect targets reference official bundles by path; an update may have renamed or
+            // removed them, so resolve against the live index's bundle table.
+            var bundlesByPath = new Dictionary<string, BundleRecord>(StringComparer.OrdinalIgnoreCase);
+            foreach (var bundle in work.Index.Bundles.Span)
+            {
+                var bundlePath = bundle.Path;
+                if (!string.IsNullOrEmpty(bundlePath))
+                    bundlesByPath[bundlePath] = bundle;
+            }
+
+            foreach (var entry in state.PatchedFiles)
+            {
+                if (!work.TryGetFile(entry.Path, out var record) || record == null)
+                {
+                    skipped.Add(entry.Path); // removed/renamed by the update
+                    continue;
+                }
+
+                bool matches;
+                try
+                {
+                    matches = record.Size == entry.AppliedSize &&
+                              HashUtil.Sha256Bytes(record.Read().ToArray())
+                                  .Equals(entry.AppliedSha256, StringComparison.OrdinalIgnoreCase);
+                }
+                catch (Exception ex)
+                {
+                    // Cannot read the live content (its custom bundle is missing or corrupt): the
+                    // file is broken either way, so treat it as ours and redirect if we can.
+                    AppLog.Warn(_paths, $"Per-file restore: cannot read {entry.Path}: {ex.Message}");
+                    matches = true;
+                }
+
+                if (!matches)
+                {
+                    skipped.Add(entry.Path); // changed since we wrote it: never overwrite with old bytes
+                    continue;
+                }
+
+                if (string.IsNullOrEmpty(entry.OriginalBundlePath) ||
+                    !bundlesByPath.TryGetValue(entry.OriginalBundlePath, out var originalBundle))
+                {
+                    unresolved.Add(entry); // still ours, but the original location is gone: keep suppression
+                    continue;
+                }
+
+                record.Redirect(originalBundle, (int)entry.OriginalOffset, (int)entry.OriginalSize);
+                restored++;
+            }
+
+            if (restored > 0)
+            {
+                work.Save();
+                work.Commit();
+            }
+        }
+
+        // Drop only the custom bundles no live record references anymore; bundles still backing a
+        // kept-suppressed file or an edit made by another tool stay on disk.
+        var cleanedBundles = false;
+        if (BackupManager.HasCustomBundles(game.BundlesDir))
+        {
+            var deleted = RemoveOrphanCustomBundles(game);
+            cleanedBundles = deleted > 0;
+            AppLog.Info(_paths, $"Per-file restore: removed {deleted} orphan custom bundle(s).");
+        }
+
+        if (unresolved.Count == 0)
+        {
+            StateStore.Delete(_paths);
+            AppLog.Info(_paths,
+                $"Per-file restore: restored={restored}, skipped={skipped.Count} (kept current content).");
+        }
+        else
+        {
+            // Keep the old applied/original hashes so a later restore stays on the safe per-file
+            // path; only the still-suppressed entries remain tracked.
+            StateStore.Save(_paths, new AppState
+            {
+                SchemaVersion = state.SchemaVersion,
+                GameRoot = state.GameRoot,
+                IndexPath = state.IndexPath,
+                OriginalIndexSha256 = state.OriginalIndexSha256,
+                AppliedIndexSha256 = state.AppliedIndexSha256,
+                BackupPath = state.BackupPath,
+                RulePackName = state.RulePackName,
+                RulePackPath = state.RulePackPath,
+                Preset = state.Preset,
+                AppliedAt = state.AppliedAt,
+                FileCount = unresolved.Count,
+                CustomBundleFiles = BackupManager.ListCustomBundleFiles(game.BundlesDir).ToList(),
+                PatchedFiles = unresolved
+            });
+            AppLog.Warn(_paths,
+                $"Per-file restore: restored={restored}, skipped={skipped.Count}, unresolved={unresolved.Count} " +
+                "(original bundle missing; their suppression is kept). Verify game files, then restore again.");
+        }
+
+        var message = unresolved.Count > 0
+            ? $"Per-file restore: {restored} restored, {skipped.Count} skipped, {unresolved.Count} kept suppressed (original bundle missing)."
+            : $"Per-file restore: {restored} restored, {skipped.Count} skipped (changed by update, kept new content).";
+        if (skipped.Count > 0)
+        {
+            message += " Skipped: " + string.Join(", ", skipped.Take(10)) +
+                       (skipped.Count > 10 ? $" (+{skipped.Count - 10} more)" : "");
+        }
+
+        return new RestoreResult
+        {
+            RestoredIndex = restored > 0,
+            CleanedCustomBundles = cleanedBundles,
+            PerFile = true,
+            FilesRestored = restored,
+            FilesSkipped = skipped.Count,
+            FilesUnresolved = unresolved.Count,
+            SkippedPaths = skipped,
+            Message = message
+        };
+    }
+
+    private int RemoveOrphanCustomBundles(GameLocation game)
+    {
+        var referenced = new List<string?>();
+        using (var read = IndexSession.OpenReadOnly(game.IndexPath, game.BundlesDir))
+        {
+            foreach (var file in read.Index.Files.Values)
+                referenced.Add(file.BundleRecord?.Path);
+        }
+
+        return BackupManager.DeleteOrphanCustomBundles(game.BundlesDir, referenced);
     }
 
     private string DownloadIndex(string url, string bundlesDir)

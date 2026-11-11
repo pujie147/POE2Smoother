@@ -20,23 +20,6 @@ void Check(string name, bool ok, string? detail = null)
     }
 }
 
-void Throws<T>(string name, Action action) where T : Exception
-{
-    try
-    {
-        action();
-        Check(name, false, $"expected {typeof(T).Name}");
-    }
-    catch (T)
-    {
-        Check(name, true);
-    }
-    catch (Exception ex)
-    {
-        Check(name, false, $"expected {typeof(T).Name}, got {ex.GetType().Name}: {ex.Message}");
-    }
-}
-
 // ---------------------------------------------------------------------------
 // IgnoreList
 // ---------------------------------------------------------------------------
@@ -401,15 +384,15 @@ Check("path: from game root -> index", Path.GetFullPath(fromRoot.IndexPath) == P
 }
 
 // ---------------------------------------------------------------------------
-// AppService: game update detection + forced restore
+// AppService: game update -> safe per-file restore (--force still overwrites)
 // ---------------------------------------------------------------------------
 {
     var root = TestIndexBuilder.NewRoot("update");
     var bundles = Path.Combine(root, "Bundles2");
-    var indexPath = TestIndexBuilder.Build(bundles, new[]
-    {
-        ("metadata/effects/spells/fire/fireball.ao", Encoding.UTF8.GetBytes("AddAttached( 'x.pet', <root> );"))
-    });
+    var aoPath = "metadata/effects/spells/fire/fireball.ao";
+    var v1Ao = "AddAttached( 'x.pet', <root> );\nKeepThis();\n";
+    var v2Ao = "AddAttached( 'x.pet', <root> );\nKeepThis();\nNewPatch();\n";
+    var indexPath = TestIndexBuilder.Build(bundles, new[] { (aoPath, Encoding.UTF8.GetBytes(v1Ao)) });
     var game = SteamLibraryLocator.FromIndex(indexPath);
     var appPaths = new AppPaths(Path.Combine(root, "home"));
     var service = new AppService(appPaths);
@@ -424,17 +407,152 @@ Check("path: from game root -> index", Path.GetFullPath(fromRoot.IndexPath) == P
         Force = true
     };
     service.Apply(request);
+    Check("update: per-file fingerprints recorded",
+        StateStore.Load(appPaths) is { } st0 && st0.PatchedFiles.Count == 1 &&
+        st0.PatchedFiles[0].AppliedSha256.Length == 64);
 
-    // Simulate a game update / external index change.
-    File.AppendAllText(indexPath, "x");
+    // Simulate a game update: index and content bundle are rewritten with new data.
+    TestIndexBuilder.Build(bundles, new[] { (aoPath, Encoding.UTF8.GetBytes(v2Ao)) });
     var status = service.GetStatus(game);
     Check("update: detected", status.GameUpdated);
-    Throws<InvalidOperationException>("update: restore refuses without force",
-        () => service.Restore(new RestoreRequest { Game = game }));
 
-    var forced = service.Restore(new RestoreRequest { Game = game, Force = true });
-    Check("update: forced restore works", forced.RestoredIndex);
+    // Default restore must NOT downgrade: the file's content is no longer ours, so it is skipped.
+    var safe = service.Restore(new RestoreRequest { Game = game });
+    Check("update: per-file restore chosen", safe.PerFile && !safe.RestoredIndex);
+    Check("update: changed file skipped", safe.FilesSkipped == 1 && safe.FilesRestored == 0);
+    using (var read = IndexSession.OpenReadOnly(indexPath, bundles))
+    {
+        read.TryGetFile(aoPath, out var rec);
+        Check("update: new content kept (no downgrade)",
+            Encoding.UTF8.GetString(rec!.Read().ToArray()) == v2Ao);
+    }
     Check("update: state cleared", StateStore.Load(appPaths) == null);
+    Check("update: orphan custom bundles cleaned", !BackupManager.HasCustomBundles(bundles));
+
+    // Re-apply works directly on the updated index.
+    var reapply = service.Apply(request);
+    Check("update: re-apply after update succeeds", reapply.Plan.Changes.Count == 1);
+
+    // --force remains the escape hatch: after a second update it overwrites the whole
+    // index with the backup, deliberately downgrading. (Content beyond the index file is
+    // undefined here because the synthetic update also rewrote the bundle — same caveat
+    // applies to --force on a real install, which is why per-file is the default.)
+    var backupBeforeForce = StateStore.Load(appPaths)!.BackupPath;
+    TestIndexBuilder.Build(bundles, new[] { (aoPath, Encoding.UTF8.GetBytes("AddAttached( 'x.pet', <root> );\nKeepThis();\nNewerPatch();\n")) });
+    var forced = service.Restore(new RestoreRequest { Game = game, Force = true });
+    Check("update: forced restore overwrites whole index", forced.RestoredIndex && !forced.PerFile);
+    Check("update: forced restore wrote back the exact backup",
+        HashUtil.Sha256File(indexPath) == HashUtil.Sha256File(backupBeforeForce));
+    Check("update: forced restore clears state", StateStore.Load(appPaths) == null);
+}
+
+// ---------------------------------------------------------------------------
+// AppService: per-file restore judges each file (restore consistent, skip changed)
+// ---------------------------------------------------------------------------
+{
+    var root = TestIndexBuilder.NewRoot("restore-mixed");
+    var bundles = Path.Combine(root, "Bundles2");
+    var alphaPath = "metadata/effects/spells/alpha/fireball.ao";
+    var betaPath = "metadata/effects/spells/alpha/halo.ao";
+    var alpha = "version 1\nAddAttached( 'metadata/effects/spells/fire/burn.pet', <root> );\nKeepThis();\n";
+    var beta = "version 1\nAddAttached( 'metadata/effects/spells/fire/spark.pet', <root> );\nKeepThis();\n";
+    var indexPath = TestIndexBuilder.Build(bundles, new[]
+    {
+        (alphaPath, Encoding.UTF8.GetBytes(alpha)),
+        (betaPath, Encoding.UTF8.GetBytes(beta))
+    });
+    var game = SteamLibraryLocator.FromIndex(indexPath);
+    var appPaths = new AppPaths(Path.Combine(root, "home"));
+    var service = new AppService(appPaths);
+    var (packM, _) = service.BuildRules(game, "Mixed", "test");
+    service.Apply(new ApplyRequest
+    {
+        Game = game,
+        Pack = packM,
+        Preset = "safe",
+        Ignore = IgnoreList.Default(),
+        Force = true
+    });
+    Check("mixed: two files suppressed", StateStore.Load(appPaths) is { PatchedFiles.Count: 2 });
+
+    // An external edit changes beta after our apply; alpha stays exactly as we wrote it.
+    using (var work = IndexSession.OpenWorkCopy(indexPath, bundles))
+    {
+        work.TryGetFile(betaPath, out var rec);
+        rec!.Write(Encoding.UTF8.GetBytes("MANUALLY EDITED"));
+        work.Save();
+        work.Commit();
+    }
+
+    var restore = service.Restore(new RestoreRequest { Game = game });
+    Check("mixed: per-file restore chosen", restore.PerFile);
+    Check("mixed: consistent file restored", restore.FilesRestored == 1);
+    Check("mixed: changed file skipped",
+        restore.FilesSkipped == 1 && restore.SkippedPaths.Contains(betaPath));
+
+    using (var read = IndexSession.OpenReadOnly(indexPath, bundles))
+    {
+        read.TryGetFile(alphaPath, out var a);
+        Check("mixed: alpha back to original", Encoding.UTF8.GetString(a!.Read().ToArray()) == alpha);
+        read.TryGetFile(betaPath, out var b);
+        Check("mixed: beta keeps the newer content",
+            Encoding.UTF8.GetString(b!.Read().ToArray()) == "MANUALLY EDITED");
+        Check("mixed: file count intact", read.Index.Files.Count == 2);
+    }
+    Check("mixed: state cleared", StateStore.Load(appPaths) == null);
+    Check("mixed: custom bundle still referenced by beta is kept", BackupManager.HasCustomBundles(bundles));
+}
+
+// ---------------------------------------------------------------------------
+// AppService: per-file restore keeps suppression when the original bundle is gone
+// ---------------------------------------------------------------------------
+{
+    var root = TestIndexBuilder.NewRoot("restore-unresolved");
+    var bundles = Path.Combine(root, "Bundles2");
+    var aoPath = "metadata/effects/spells/alpha/fireball.ao";
+    var originalAo = "version 1\nAddAttached( 'x.pet', <root> );\nKeepThis();\n";
+    // Regex removal leaves the newline that followed the stripped call.
+    var strippedAo = "version 1\n\nKeepThis();\n";
+    var indexPath = TestIndexBuilder.Build(bundles, new[] { (aoPath, Encoding.UTF8.GetBytes(originalAo)) });
+    var game = SteamLibraryLocator.FromIndex(indexPath);
+    var appPaths = new AppPaths(Path.Combine(root, "home"));
+    var service = new AppService(appPaths);
+    var (packU, _) = service.BuildRules(game, "Unresolved", "test");
+    service.Apply(new ApplyRequest
+    {
+        Game = game,
+        Pack = packU,
+        Preset = "safe",
+        Ignore = IgnoreList.Default(),
+        Force = true
+    });
+
+    // Lose the original bundle coordinates, then drift the index while the suppressed
+    // content itself is unchanged: redirect is impossible, so the file must stay suppressed.
+    var st = StateStore.Load(appPaths)!;
+    st.PatchedFiles[0].OriginalBundlePath = "Data/missing.bundle.bin";
+    StateStore.Save(appPaths, st);
+    TestIndexBuilder.Build(bundles, new[] { (aoPath, Encoding.UTF8.GetBytes(strippedAo)) });
+
+    var restore = service.Restore(new RestoreRequest { Game = game });
+    Check("unresolved: kept suppressed instead of failing",
+        restore.PerFile && restore.FilesUnresolved == 1 && restore.FilesRestored == 0 && restore.FilesSkipped == 0);
+    using (var read = IndexSession.OpenReadOnly(indexPath, bundles))
+    {
+        read.TryGetFile(aoPath, out var rec);
+        Check("unresolved: content still readable (not corrupted)",
+            Encoding.UTF8.GetString(rec!.Read().ToArray()) == strippedAo);
+    }
+    var st2 = StateStore.Load(appPaths);
+    Check("unresolved: state keeps the remaining entry",
+        st2 != null && st2.PatchedFiles.Count == 1 && st2.PatchedFiles[0].Path == aoPath);
+
+    // Once the game files are verified (content becomes the original again), a second
+    // restore finds nothing of ours and clears the state.
+    TestIndexBuilder.Build(bundles, new[] { (aoPath, Encoding.UTF8.GetBytes(originalAo)) });
+    var second = service.Restore(new RestoreRequest { Game = game });
+    Check("unresolved: later restore skips the replaced file and clears state",
+        second.PerFile && second.FilesSkipped == 1 && StateStore.Load(appPaths) == null);
 }
 
 // ---------------------------------------------------------------------------

@@ -450,7 +450,9 @@ public partial class MainWindow : Window
         {
             var result = await Task.Run(() => _service.Restore(new RestoreRequest { Game = _game }));
             AppendLog(result.Message);
-            StatusText.Text = result.RestoredIndex ? "还原完成 / Restored." : result.Message;
+            StatusText.Text = result.RestoredIndex || result.PerFile || result.CleanedCustomBundles
+                ? "还原完成 / Restored."
+                : result.Message;
         }
         catch (Exception ex)
         {

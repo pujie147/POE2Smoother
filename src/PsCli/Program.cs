@@ -115,6 +115,7 @@ Usage:
   pscli apply       [--index <...>|--game <root>] [--pack <pack.json>] --preset safe|clean|performance|full [--profile <name>] [--categories a,b] [--yes] [--dry-run] [--force] [--include-experimental]
   pscli status      [--index <...>|--game <root>] [--json]
   pscli restore     [--index <...>|--game <root>] [--backup <file>|--index-url <url>] [--clean-only] [--force] [--yes]
+                    default is a safe per-file restore after a game update (changed files are kept); --force restores the whole backup
   pscli profiles    --action list|show|save|delete [--name <name>] [--preset ...] [--categories ...] [--ignore <file>]
   pscli backups     [--prune]
   pscli self-test   --index <Bundles2/_.index.bin> [--game-path <metadata/path>] [--backup-dir <dir>] [--yes] [--keep] [--force]
