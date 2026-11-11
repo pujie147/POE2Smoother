@@ -82,6 +82,16 @@ jobs:
           echo "PS_VERSION=$SHORT" >> "$GITHUB_ENV"
           echo "releasing $TAG as version $SHORT"
 
+      - name: Make the offline feed path exist
+        run: |
+          # NuGet.config declares the vendor/nuget offline feed, which is gitignored and so
+          # absent from a fresh clone. NuGet treats a *missing local source* as a fatal
+          # NU1301 ("本地源 ... 不存在") — RestoreAdditionalProjectSources cannot rescue that,
+          # because the failure is the broken source, not an unfound package. Creating the
+          # empty directory makes the source valid-but-empty, after which packages resolve
+          # from nuget.org. Local builds keep using the real feed unchanged.
+          mkdir -p vendor/nuget
+
       - name: Test (release gate)
         run: |
           # Same gate the developer runs locally. Actions logs need a signed-in browser to
@@ -118,7 +128,7 @@ jobs:
           # (the tagged commit), and describing from there finds $TAG itself, not the previous tag.
           PREV="$(git describe --tags --abbrev=0 "${TAG}^{commit}^" 2>/dev/null || true)"
           CHANGES="$(awk -v want="## $TAG" '
-            index($0, want)==1 && (length($0)==length(want) || substr($0, length(want)+1, 1) ~ /[[:space:]]/) { f=1; next }
+            index($0, want)==1 && (length($0)==length(want) || substr($0, length(want)+1, 1) ~ /[ \t]/) { f=1; next }
             f && index($0, "## ")==1 { f=0 }
             f { print }' CHANGELOG.md)"
           if ! grep -q '[^[:space:]]' <<<"$CHANGES"; then
@@ -149,20 +159,34 @@ jobs:
           # Idempotent: a re-run must converge, not fail on "already exists".
           # Draft first, attach, then flip to published — so a crash mid-upload never
           # leaves a half-populated release visible to users.
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" \
-              --draft \
-              --verify-tag \
-              --title "PoE2 Smoother $TAG" \
+          publish() {
+            if ! gh release view "$TAG" >/dev/null 2>&1; then
+              gh release create "$TAG" \
+                --draft \
+                --verify-tag \
+                --title "PoE2 Smoother $TAG" \
+                --notes-file notes.md
+            fi
+            gh release upload "$TAG" dist/PoE2Smoother-x86_64.AppImage --clobber
+            # --prerelease= accepts the resolve step's true/false directly; writing it as a
+            # bare flag through a ternary would leave a dangling line continuation.
+            gh release edit "$TAG" \
+              --draft=false \
+              --prerelease='${{ steps.ver.outputs.prerelease }}' \
               --notes-file notes.md
+          }
+          set -o pipefail
+          # A 403 here means the repo's Settings → Actions → Workflow permissions is locked
+          # to read-only, which no workflow-level `permissions:` can override; surface that
+          # text where a tokenless machine can read it.
+          if publish 2>&1 | tee publish-output.log; then
+            exit 0
           fi
-          gh release upload "$TAG" dist/PoE2Smoother-x86_64.AppImage --clobber
-          # --prerelease= accepts the resolve step's true/false directly; writing it as
-          # a bare flag through a ternary would leave a dangling line continuation.
-          gh release edit "$TAG" \
-            --draft=false \
-            --prerelease='${{ steps.ver.outputs.prerelease }}' \
-            --notes-file notes.md
+          echo "::error::release publish failed; tail follows"
+          tail -25 publish-output.log \
+            | tr -d '\r' \
+            | sed -e 's/%/%25/g' -e 's/^/::error::/'
+          exit 1
 
       - name: Upload built AppImage on failure
         if: failure()
