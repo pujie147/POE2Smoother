@@ -18,10 +18,11 @@ and publish the matching section below as the release body — keep the heading 
   wrote are reverted, so restoring can no longer downgrade updated game files.*
 - 新增「赞助」标签页,附支付宝收款码。
   *New Sponsor tab with an Alipay QR code.*
-- 发布全自动化:推送 `vX.Y.Z` tag 即由 GitHub Actions 跑测试、构建 AppImage、创建 GitHub Release 并挂上产物。
-  Releases 页从此有预编译二进制,不用再自己编译。
-  *Releases are now automated: pushing a `vX.Y.Z` tag runs tests, builds the AppImage and publishes a
-  GitHub Release. Prebuilt binaries are downloadable instead of build-from-source only.*
+- 发布全自动化:推送 `vX.Y.Z` tag 即由 GitHub Actions 跑测试、构建 AppImage、创建 GitHub Release 并挂上产物,
+  不再手工上传;README 也补上了下载入口(二进制从 v1.0 起就在 Releases 页上,但 README 从来没给过链接)。
+  *Releases are now cut by pushing a `vX.Y.Z` tag: CI runs the gate, builds the AppImage and publishes it,
+  replacing the manual upload. The README now links to the releases — the binaries were there since v1.0,
+  but nothing pointed at them.*
 - 版本号只有一个来源(git tag),GUI 标题旁新增版本显示,`pscli version` 与之保持一致。
   *The version now comes solely from the git tag; the GUI title shows it and `pscli version` agrees.*
 - 英文 README([README.en.md](README.en.md))与本更新日志。

@@ -111,6 +111,17 @@ jobs:
       - name: Build GUI + CLI
         run: bash scripts/build-linux.sh
 
+      - name: Install SVG renderer for the AppDir icon
+        run: |
+          # build-appimage.sh renders .DirIcon from the SVG only when rsvg-convert exists.
+          # The developer's Deck has it (local AppImages get an icon), the runner does not,
+          # so CI artifacts differed cosmetically — and appimagetool 370 already warns that
+          # a future build will refuse an AppDir without one. Non-fatal: a missing icon must
+          # never block a release.
+          (sudo apt-get update -qq && sudo apt-get install -y -qq librsvg2-bin) \
+            || echo "::warning::librsvg2-bin unavailable; AppImage will ship without .DirIcon"
+          command -v rsvg-convert >/dev/null || echo "::warning::rsvg-convert still missing"
+
       - name: Build AppImage
         run: bash scripts/build-appimage.sh --no-publish
 
