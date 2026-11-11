@@ -83,7 +83,20 @@ jobs:
           echo "releasing $TAG as version $SHORT"
 
       - name: Test (release gate)
-        run: bash scripts/test-all.sh
+        run: |
+          # Same gate the developer runs locally. Actions logs need a signed-in browser to
+          # read, so on failure re-emit the tail as annotations: those are public
+          # (GET /repos/{owner}/{repo}/check-runs/{job}/annotations) and readable from a
+          # machine that has no gh CLI, which is exactly this developer's Deck.
+          set -o pipefail
+          if bash scripts/test-all.sh 2>&1 | tee test-output.log; then
+            exit 0
+          fi
+          echo "::error::scripts/test-all.sh failed; tail follows"
+          tail -40 test-output.log \
+            | tr -d '\r' \
+            | sed -e 's/%/%25/g' -e 's/^/::error::/'
+          exit 1
 
       - name: Build GUI + CLI
         run: bash scripts/build-linux.sh

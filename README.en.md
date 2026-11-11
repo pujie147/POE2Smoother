@@ -1,6 +1,6 @@
 # PoE2 Smoother — a PoE2 effect-suppression tool for SteamOS handhelds
 
-An Path of Exile 2 effect remover for SteamOS / Linux handheld players.
+A Path of Exile 2 effect remover for SteamOS / Linux handheld players.
 It strips out the flashy skill effects, league effects and scene particles in your client,
 and gives the framerate and the thermals back to what actually matters — the gameplay.
 
