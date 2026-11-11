@@ -13,7 +13,12 @@
     <Border DockPanel.Dock="Top" Background="#1C2026" CornerRadius="10" Padding="16" Margin="0,0,0,12">
       <Grid ColumnDefinitions="*,Auto">
         <StackPanel Spacing="4">
-          <TextBlock Text="PoE2 Smoother" FontSize="26" FontWeight="Bold" Foreground="#F2F4F8"/>
+          <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Bottom">
+            <TextBlock Text="PoE2 Smoother" FontSize="26" FontWeight="Bold" Foreground="#F2F4F8"/>
+            <!-- 版本号来自构建时的 Version 属性(git tag → CI → -p:Version),见 PsCore/BuildInfo.cs -->
+            <TextBlock x:Name="VersionText" FontSize="12" Foreground="#6B7382"
+                       VerticalAlignment="Bottom" Margin="0,0,0,4"/>
+          </StackPanel>
           <TextBlock x:Name="StatusText"
                      Text="正在检测游戏… / Detecting game…"
                      Foreground="#AAB2C0" TextWrapping="Wrap"/>

@@ -29,6 +29,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        VersionText.Text = BuildInfo.Version;
 
         _service = new AppService(_paths);
         _profiles = new ProfileStore(_paths);

@@ -5,9 +5,11 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <Deterministic>true</Deterministic>
-    <Version>1.0.0</Version>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <FileVersion>1.0.0.0</FileVersion>
+    <!-- 版本号唯一来源是 git tag:发布时由 CI 传 -p:Version=1.1.0(tag v1.1,去掉前导 v)。
+         没有 tag 的本地构建拿到 0.0.0-dev,不再谎报 1.0.0。
+         这里刻意**不写** AssemblyVersion / FileVersion:SDK 会从 Version 派生数字版本
+         (1.1.0 -> 1.1.0.0),写死反而会让 -p:Version 覆盖不掉它们。 -->
+    <Version Condition="'$(Version)' == ''">0.0.0-dev</Version>
     <LibGGPK3Dir Condition="'$(RuntimeIdentifier)' == 'linux-x64'">$(MSBuildThisFileDirectory)vendor/libggpk3/linux-x64</LibGGPK3Dir>
     <LibGGPK3Dir Condition="'$(LibGGPK3Dir)' == '' and $([MSBuild]::IsOSPlatform('Linux'))">$(MSBuildThisFileDirectory)vendor/libggpk3/linux-x64</LibGGPK3Dir>
     <LibGGPK3Dir Condition="'$(LibGGPK3Dir)' == ''">$(MSBuildThisFileDirectory)vendor/libggpk3/win-x64</LibGGPK3Dir>

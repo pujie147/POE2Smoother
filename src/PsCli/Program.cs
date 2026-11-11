@@ -1,12 +1,12 @@
 using PsCli;
 using PsCli.Commands;
+using PsCore;
 
 return Cli.Run(args);
 
 internal static class Cli
 {
-    private const string Version = "1.0.0";
-
+    // 版本号不在这里硬编码:见 BuildInfo / Directory.Build.props(git tag 是唯一来源)。
     private static readonly HashSet<string> FlagOptions = new(StringComparer.Ordinal)
     {
         "help", "yes", "keep", "force", "json", "clean-custom", "clean-only",
@@ -87,7 +87,7 @@ internal static class Cli
 
     private static int PrintVersion()
     {
-        Console.WriteLine($"pscli {Version}");
+        Console.WriteLine($"pscli {BuildInfo.Version}");
         return 0;
     }
 
@@ -101,7 +101,7 @@ internal static class Cli
     private static void PrintHelp()
     {
         Console.WriteLine($"""
-pscli {Version} - PoE2 SteamOS patcher
+pscli {BuildInfo.Version} - PoE2 SteamOS patcher
 
 Usage:
   pscli detect      [--json]
