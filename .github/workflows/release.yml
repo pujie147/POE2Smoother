@@ -1,0 +1,161 @@
+name: Release
+
+# Pushing a tag like v1.1 (or v1.2.0-rc1 for a prerelease) builds the AppImage on a
+# GitHub-hosted runner and publishes it as a GitHub Release asset. There is no `gh`
+# on the developer's Deck, so everything that talks to GitHub happens here, using the
+# workflow's built-in GITHUB_TOKEN.
+
+on:
+  push:
+    tags: ['v[0-9]*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)publish, e.g. v1.1'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # Pinned rather than ubuntu-latest: the AppImage must stay reproducible.
+    runs-on: ubuntu-24.04
+    env:
+      # NuGet.config does <clear/> and points at the gitignored vendor/nuget offline
+      # feed, which a fresh clone does not have. This property is applied *after* the
+      # config, so it restores nuget.org access on the runner without changing local
+      # builds (dotnet build/publish take no --configfile, hence env rather than a
+      # second config file).
+      RestoreAdditionalProjectSources: https://api.nuget.org/v3/index.json
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+      # TAG / PS_VERSION are exported by the "Resolve version" step through GITHUB_ENV;
+      # they are deliberately NOT declared here, because a job-level env entry of the same
+      # name would compete with the GITHUB_ENV value for the build steps.
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # full history + all tags: needed to find the previous tag for the notes
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Resolve version from tag
+        id: ver
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+(\.[0-9]+)?(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::tag '$TAG' is not vMAJOR.MINOR[.PATCH][-PRERELEASE] (e.g. v1.1, v1.1.0 or v1.2.0-rc1)"
+            exit 1
+          fi
+          # MSBuild needs a numeric version, so drop the 'v' and pad a 2-part tag:
+          # the repo's own convention is v1.0/v1.1, but AssemblyVersion derivation
+          # wants major.minor.patch. v1.1 -> 1.1.0, v1.2.0-rc1 -> 1.2.0-rc1.
+          SHORT="${TAG#v}"
+          CORE="${SHORT%%-*}"
+          SUFFIX=''
+          if [[ "$SHORT" == *-* ]]; then SUFFIX="-${SHORT#*-}"; fi
+          if [[ "$CORE" =~ ^[0-9]+\.[0-9]+$ ]]; then CORE="${CORE}.0"; fi
+          SHORT="${CORE}${SUFFIX}"
+          {
+            echo "tag=$TAG"
+            echo "short=$SHORT"
+            echo "prerelease=$([[ "$SHORT" == *-* ]] && echo true || echo false)"
+          } >> "$GITHUB_OUTPUT"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "PS_VERSION=$SHORT" >> "$GITHUB_ENV"
+          echo "releasing $TAG as version $SHORT"
+
+      - name: Test (release gate)
+        run: bash scripts/test-all.sh
+
+      - name: Build GUI + CLI
+        run: bash scripts/build-linux.sh
+
+      - name: Build AppImage
+        run: bash scripts/build-appimage.sh --no-publish
+
+      - name: Collect checksum
+        id: sum
+        run: |
+          test -f dist/PoE2Smoother-x86_64.AppImage
+          echo "sha256=$(sha256sum dist/PoE2Smoother-x86_64.AppImage | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Write release notes
+        run: |
+          # Body = the matching section of CHANGELOG.md (heading must be exactly `## v1.1 ...`),
+          # with the commit log as fallback so a forgotten entry cannot ship a blank release.
+          # Note the ^{commit} peel: `${TAG}^` on an annotated tag is the tag object's parent
+          # (the tagged commit), and describing from there finds $TAG itself, not the previous tag.
+          PREV="$(git describe --tags --abbrev=0 "${TAG}^{commit}^" 2>/dev/null || true)"
+          CHANGES="$(awk -v want="## $TAG" '
+            index($0, want)==1 && (length($0)==length(want) || substr($0, length(want)+1, 1) ~ /[[:space:]]/) { f=1; next }
+            f && index($0, "## ")==1 { f=0 }
+            f { print }' CHANGELOG.md)"
+          if ! grep -q '[^[:space:]]' <<<"$CHANGES"; then
+            echo "::warning::CHANGELOG.md has no '## $TAG' section, falling back to the commit log"
+            RANGE=()
+            # empty array, not an empty string: `git log ""` is a fatal ambiguous argument.
+            # No range at all = first release, so list the whole history.
+            [[ -n "$PREV" ]] && RANGE=("$PREV..$TAG")
+            CHANGES="$(git log --no-merges --pretty='- %s (%h)' "${RANGE[@]}")"
+          fi
+
+          {
+            printf '## 下载 / Download\n\n'
+            printf 'AppImage(固定文件名,可直接 curl):\n\n'
+            printf '```bash\ncurl -LO https://github.com/pujie147/mySmoother2/releases/latest/download/PoE2Smoother-x86_64.AppImage\nchmod +x PoE2Smoother-x86_64.AppImage\n./PoE2Smoother-x86_64.AppImage\n```\n\n'
+            printf 'SteamOS 缺少 FUSE2 时用解包模式运行 / if FUSE2 is missing, run extracted:\n\n'
+            printf '```bash\nAPPIMAGE_EXTRACT_AND_RUN=1 ./PoE2Smoother-x86_64.AppImage\n```\n\n'
+            printf 'SHA-256: `%s`\n\n' '${{ steps.sum.outputs.sha256 }}'
+            printf '%s\n\n' '---'
+            printf '%s\n' "$CHANGES"
+          } > notes.md
+          cat notes.md
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Idempotent: a re-run must converge, not fail on "already exists".
+          # Draft first, attach, then flip to published — so a crash mid-upload never
+          # leaves a half-populated release visible to users.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --draft \
+              --verify-tag \
+              --title "PoE2 Smoother $TAG" \
+              --notes-file notes.md
+          fi
+          gh release upload "$TAG" dist/PoE2Smoother-x86_64.AppImage --clobber
+          # --prerelease= accepts the resolve step's true/false directly; writing it as
+          # a bare flag through a ternary would leave a dangling line continuation.
+          gh release edit "$TAG" \
+            --draft=false \
+            --prerelease='${{ steps.ver.outputs.prerelease }}' \
+            --notes-file notes.md
+
+      - name: Upload built AppImage on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: appimage-${{ steps.ver.outputs.tag }}
+          path: dist/PoE2Smoother-x86_64.AppImage
+          retention-days: 7
+          if-no-files-found: ignore
