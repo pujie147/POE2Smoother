@@ -4,6 +4,8 @@
 它把客户端里那些花里胡哨的技能特效、联赛特效、场景粒子"摘"掉，
 把帧率和温度留给真正重要的东西——玩法本身。
 
+**[English](README.en.md)** · 中文（当前）· 两份文件互为翻译，改一份请同步另一份
+
 ## 功能一览
 
 - 自动定位 Steam 版 PoE2（多 Steam 库、SD 卡安装都能找到）
@@ -12,6 +14,20 @@
 - 应用、状态检测、游戏更新检测、一键还原；每次应用前自动备份原始 index
 - 中文 / English 双语界面，大字号、手柄/键盘可操作，适配 Steam Deck / Ally 的 1280×800
 - 只修改本地客户端文件：不注入内存、不读写游戏进程
+
+## 下载 / Download
+
+预编译好的 AppImage 挂在 [Releases](https://github.com/pujie147/mySmoother2/releases) 页上，
+[最新发布版](https://github.com/pujie147/mySmoother2/releases/latest) 永远指向正式版的最新 tag。
+每次发布由 GitHub Actions 从 `v*` tag 自动构建（`.github/workflows/release.yml`：跑 `scripts/test-all.sh`
+门禁 → 发布 GUI/CLI → 打包 AppImage → 挂上 Release），产物固定叫 **`PoE2Smoother-x86_64.AppImage`**，
+所以下面这条命令长期有效：
+
+```bash
+curl -LO https://github.com/pujie147/mySmoother2/releases/latest/download/PoE2Smoother-x86_64.AppImage
+```
+
+下载后务必核对一下 Release 正文里的 `SHA-256:`（GitHub 下载会丢掉可执行位，所以还要 `chmod +x`，见下一步）。
 
 ## 快速上手：用 GUI 屏蔽特效（推荐）
 
@@ -104,5 +120,9 @@ bash scripts/build-linux.sh      # GUI + CLI + tar.gz
 bash scripts/build-appimage.sh   # AppImage（Linux 或 WSL 中执行）
 bash scripts/test-all.sh         # 构建 + 测试 + CLI 端到端
 ```
+
+版本号只有一个来源：**git tag**。发布时 CI 把 `v1.1` 去掉前导 `v` 后用 `-p:Version=` 传进构建，
+GUI 标题旁和 `pscli version` 显示的都是它；本地不带 tag 构建出来是 `0.0.0-dev`。
+手动想指定版本：`PS_VERSION=1.2.3 bash scripts/build-linux.sh`。
 
 已知限制：仅支持 Steam 版 `Bundles2/_.index.bin`（独立客户端 `Content.ggpk` 未接入）；实验性置空策略默认关闭。分发或商用前请确认 LibGGPK3 的授权条款。
