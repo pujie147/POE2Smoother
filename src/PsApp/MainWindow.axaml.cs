@@ -37,6 +37,13 @@ public partial class MainWindow : Window
         _settings = SettingsStore.Load(_paths);
         CategoryGroupList.ItemsSource = _groups;
 
+        // 恢复勾选必须排在任何会触发 SaveSettings 的赋值之前:给 ComboBox 赋 SelectedItem 会同步
+        // 触发 SelectionChanged,处理器里的 SaveSettings 读到还没恢复的复选框,就会把用户保存的
+        // “实验性资源”勾选改写成 false——重启后勾选静默丢失,下一次应用悄悄少屏蔽一批文件。
+        ExperimentalBox.IsChecked = _settings.IncludeExperimental;
+
+        // 构造期间不写设置:下面两个下拉框的 SelectionChanged 由 _loading 挡住。
+        _loading = true;
         GroupFilterBox.ItemsSource = new[]
         {
             new GroupFilterItem("all", "全部 / All"),
@@ -57,7 +64,7 @@ public partial class MainWindow : Window
         DataDirBox.Text = _paths.Root;
         RulePackBox.Text = _paths.DefaultRulePackPath;
         LogPathBox.Text = AppLog.PathFor(_paths);
-        ExperimentalBox.IsChecked = _settings.IncludeExperimental;
+        _loading = false;
 
         LogBox.Text = string.Join(Environment.NewLine, AppLog.ReadTail(_paths, 120));
         IgnoreBox.Text = string.Join(Environment.NewLine, _ignore.Prefixes);
