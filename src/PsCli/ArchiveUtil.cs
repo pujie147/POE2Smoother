@@ -72,18 +72,8 @@ internal static class ArchiveUtil
     public static string Sha256Bytes(ReadOnlySpan<byte> bytes)
         => Convert.ToHexString(SHA256.HashData(bytes));
 
-    public static string FormatBytes(long bytes)
-    {
-        string[] units = ["B", "KB", "MB", "GB"];
-        double value = bytes;
-        var unit = 0;
-        while (value >= 1024 && unit < units.Length - 1)
-        {
-            value /= 1024;
-            unit++;
-        }
-        return unit == 0 ? $"{bytes} B" : $"{value:0.##} {units[unit]}";
-    }
+    // Implementation lives in PsCore.Sizes so the GUI can report the same numbers verbatim.
+    public static string FormatBytes(long bytes) => PsCore.Sizes.FormatBytes(bytes);
 
     public static void AtomicCopy(string source, string destination)
     {

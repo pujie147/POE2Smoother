@@ -4,6 +4,8 @@ namespace PsCore;
 
 public sealed class AppState
 {
+    // v3 added TargetKind; the tier/partial-restore fields are optional, and StateStore.Load does
+    // not gate on this number, so they stay additive within version 3 (an old binary ignores them).
     public int SchemaVersion { get; set; } = 3;
     public string GameRoot { get; set; } = "";
     public string IndexPath { get; set; } = "";
@@ -19,6 +21,15 @@ public sealed class AppState
 
     public string OriginalIndexSha256 { get; set; } = "";
     public string AppliedIndexSha256 { get; set; } = "";
+
+    /// <summary>
+    /// Hash of the index as left by a tier-filtered restore that kept some files suppressed. The
+    /// applied hash above stays what apply produced (it identifies the matching backup), so this
+    /// records the second state the tool recognises as "mine, not the game's". Without it the next
+    /// apply would read the index as a game update — and --force there discards the state *and* the
+    /// custom bundles that the kept suppressions still point into, leaving dangling records.
+    /// </summary>
+    public string PartialRestoreIndexSha256 { get; set; } = "";
     public string BackupPath { get; set; } = "";
     public string RulePackName { get; set; } = "";
     public string RulePackPath { get; set; } = "";
@@ -59,6 +70,13 @@ public sealed class PatchedFileEntry
 {
     public string Path { get; set; } = "";
     public string Strategy { get; set; } = "";
+
+    /// <summary>
+    /// <see cref="PsRules.RiskTier"/> name as written by apply, so a later restore can undo one
+    /// tier and keep the rest. State files written before tiers existed carry nothing here;
+    /// <see cref="AppService"/> then derives the tier from Strategy/Path rather than guessing Safe.
+    /// </summary>
+    public string Tier { get; set; } = "";
 
     // Where the original content lives in the official bundles (redirect-back target).
     public string OriginalBundlePath { get; set; } = "";

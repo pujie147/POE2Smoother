@@ -36,7 +36,9 @@ internal static class ListRulesCommand
                     c.Group,
                     label = c.LabelFor(language),
                     rules = c.Rules.Count,
-                    experimental = c.Rules.Count(r => r.Experimental)
+                    experimental = c.Rules.Count(r => r.Experimental),
+                    fx = c.Rules.Count(r => r.Tier == RiskTier.Fx),
+                    material = c.Rules.Count(r => r.Tier == RiskTier.Material)
                 })
             }, new JsonSerializerOptions { WriteIndented = true }));
             return 0;
@@ -57,8 +59,11 @@ internal static class ListRulesCommand
             Console.WriteLine($"[{group.Key}]");
             foreach (var category in group.OrderBy(c => c.Id))
             {
-                var experimental = category.Rules.Count(r => r.Experimental);
-                var suffix = experimental > 0 ? $" ({experimental} experimental)" : "";
+                var fx = category.Rules.Count(r => r.Tier == RiskTier.Fx);
+                var material = category.Rules.Count(r => r.Tier == RiskTier.Material);
+                var suffix = fx + material > 0
+                    ? $" ({fx} fx · {material} material)"
+                    : "";
                 Console.WriteLine($"  {category.Id,-28} {category.Rules.Count,6}  {category.LabelFor(language)}{suffix}");
             }
         }

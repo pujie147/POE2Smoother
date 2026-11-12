@@ -13,7 +13,14 @@ public sealed class ApplyRequest
     public string RulePackPath { get; init; } = "";
     public string Preset { get; init; } = "safe";
     public IgnoreList Ignore { get; init; } = IgnoreList.Default();
-    public bool IncludeExperimental { get; init; }
+
+    /// <summary>
+    /// Ceiling for what may be rewritten. Rules whose tier is above it are skipped into the
+    /// skip-experimental buckets. The old boolean mapped `true` to <see cref="RiskTier.Material"/>,
+    /// which is what "include everything experimental" always meant.
+    /// </summary>
+    public RiskTier MaxTier { get; init; } = RiskTier.Safe;
+
     public bool Force { get; init; }
     public bool DryRun { get; init; }
     public IReadOnlySet<string>? CategoryFilter { get; init; }
@@ -31,6 +38,12 @@ public sealed class ApplyResult
 public sealed class RestoreRequest
 {
     public required GameLocation Game { get; init; }
+
+    /// <summary>
+    /// Tiers to undo, as a set — not a ceiling: "undo material" must not also undo fx.
+    /// Null means everything, which keeps the whole-index backup path available.
+    /// </summary>
+    public IReadOnlySet<RiskTier>? UndoTiers { get; init; }
     public string? BackupPath { get; init; }
     public string? IndexUrl { get; init; }
     public bool Force { get; init; }
@@ -39,6 +52,11 @@ public sealed class RestoreRequest
 
 public sealed class RestoreResult
 {
+    /// <summary>
+    /// The index file itself was replaced from the backup. A per-file restore never sets this:
+    /// it redirects records and reports through <see cref="FilesRestored"/> instead, so callers
+    /// can tell "the whole index went back" from "some files went back".
+    /// </summary>
     public bool RestoredIndex { get; init; }
     public bool CleanedCustomBundles { get; init; }
     public string Message { get; init; } = "";
@@ -46,6 +64,12 @@ public sealed class RestoreResult
     // Per-file restore details (only meaningful when PerFile = true).
     public bool PerFile { get; init; }
     public int FilesRestored { get; init; }
+
+    /// <summary>Entries left suppressed by a tier filter (or with no reachable original bundle).</summary>
+    public int FilesKept { get; init; }
+
+    /// <summary>True when the caller asked for only some tiers to be undone.</summary>
+    public bool Scoped { get; init; }
     public int FilesSkipped { get; init; }
     public int FilesUnresolved { get; init; }
     public IReadOnlyList<string> SkippedPaths { get; init; } = [];
@@ -95,10 +119,13 @@ public sealed class AppService
         var state = LoadMatchingState(request.Game);
         var currentHash = store.HashIndex();
 
-        // Return to a known baseline before rebuilding the patch.
+        // Return to a known baseline before rebuilding the patch. A tier-filtered restore leaves a
+        // second, later hash that is still ours; treating it as "the game updated" would push the
+        // user towards --force, which drops the state and the custom bundles other suppressed
+        // files still reference.
         if (state != null)
         {
-            if (currentHash.Equals(state.AppliedIndexSha256, StringComparison.OrdinalIgnoreCase))
+            if (IsOneOfOurs(currentHash, state))
             {
                 if (!File.Exists(state.BackupPath))
                     throw new FileNotFoundException("Backup of the applied state is missing", state.BackupPath);
@@ -192,6 +219,7 @@ public sealed class AppService
                     {
                         Path = change.Path,
                         Strategy = change.Strategy.ToString(),
+                        Tier = change.Tier.ToString(),
                         OriginalBundlePath = record.BundleRecord?.Path ?? "",
                         OriginalOffset = record.Offset,
                         OriginalSize = record.Size,
@@ -215,6 +243,12 @@ public sealed class AppService
                 work.Commit();
                 committed = true;
             }
+
+            // Verify the committed target before describing it in state.json: a mismatch throws,
+            // the catch below restores the backup, and no state file is left claiming a patch that
+            // is not actually there. This has to run after Save/Commit — before that, the bytes on
+            // disk are still the old index.
+            VerifyApplied(patchedFiles, request.Game);
 
             var appliedHash = store.HashIndex();
             var newState = new AppState
@@ -277,6 +311,38 @@ public sealed class AppService
         }
     }
 
+    /// <summary>
+    /// Which branch <see cref="Restore"/> will take, decided from data the caller already has: the
+    /// CLI prints this before restoring, and duplicating the predicate there is how the two drift
+    /// apart. A tier filter that leaves something suppressed forces the per-file branch even when
+    /// the index has not drifted, because the whole-index path can only restore everything.
+    /// </summary>
+    public static bool UsesPerFileRestore(string currentHash, AppState? state, RestoreRequest request)
+    {
+        if (state is not { PatchedFiles.Count: > 0 } || request.Force || request.CleanOnly)
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(request.BackupPath) || !string.IsNullOrWhiteSpace(request.IndexUrl))
+            return false;
+
+        if (request.UndoTiers is { Count: > 0 } tiers &&
+            state.PatchedFiles.Any(entry => !InScope(entry, tiers)))
+            return true;
+
+        return !IsOneOfOurs(currentHash, state);
+    }
+
+    /// <summary>
+    /// The two hashes that mean "this index is what this tool left behind": the one apply produced,
+    /// and the one a tier-filtered restore produced afterwards. Empty stored hashes never match —
+    /// an index that does not exist hashes as the empty string, and must not read as "ours".
+    /// </summary>
+    private static bool IsOneOfOurs(string currentHash, AppState state) =>
+        (state.AppliedIndexSha256.Length > 0 &&
+         currentHash.Equals(state.AppliedIndexSha256, StringComparison.OrdinalIgnoreCase)) ||
+        (state.PartialRestoreIndexSha256.Length > 0 &&
+         currentHash.Equals(state.PartialRestoreIndexSha256, StringComparison.OrdinalIgnoreCase));
+
     public RestoreResult Restore(RestoreRequest request)
     {
         if (GameProcessGuard.IsGameRunning(out var processes) && !request.Force)
@@ -299,6 +365,30 @@ public sealed class AppService
 
         var cleaned = false;
 
+        // A tier filter selects a subset of what was written; every whole-index mechanism below
+        // (backup file, downloaded index, clean-only, --force) overwrites or discards the whole
+        // index, so combining them would silently undo suppressions the filter was meant to keep.
+        if (request.UndoTiers is { Count: > 0 })
+        {
+            if (state is not { PatchedFiles.Count: > 0 })
+                throw new InvalidOperationException(
+                    "A tier filter restores the files this tool recorded in state.json, and there is no " +
+                    "such record for this install. Restore everything instead (no --undo-tiers).");
+
+            if (!string.IsNullOrWhiteSpace(request.BackupPath) || !string.IsNullOrWhiteSpace(request.IndexUrl))
+                throw new InvalidOperationException(
+                    "A tier filter restores per file and cannot be combined with --backup/--index-url, " +
+                    "which replace the whole index.");
+            if (request.CleanOnly)
+                throw new InvalidOperationException(
+                    "--clean-only deletes every custom bundle; that would corrupt the files a tier " +
+                    "filter is keeping suppressed. Restore without a filter instead.");
+            if (request.Force)
+                throw new InvalidOperationException(
+                    "--force restores the whole backup over the current index, undoing far more than the " +
+                    "requested tiers. Drop --force to restore a subset.");
+        }
+
         if (request.CleanOnly)
         {
             if (store.HasCustomBundles())
@@ -314,19 +404,14 @@ public sealed class AppService
             };
         }
 
-        // Safety-first per-file restore: when the state carries per-file fingerprints (schema v2),
-        // the index drifted from what this tool produced (game update?), and the user did not ask
-        // for a whole-index overwrite, restore only files whose live content still matches exactly
-        // what we wrote. Files the game changed are skipped, so an update is never downgraded.
+        // Safety-first per-file restore (see UsesPerFileRestore for the exact rule): only files
+        // whose live content still matches exactly what we wrote get redirected back, so a game
+        // update is never downgraded. A tier filter takes this branch too, because redirecting a
+        // subset is the only way to leave the rest suppressed.
         if (state is { PatchedFiles.Count: > 0 } &&
-            !request.Force &&
-            string.IsNullOrWhiteSpace(request.BackupPath) &&
-            string.IsNullOrWhiteSpace(request.IndexUrl) &&
-            !currentHash.Equals(state.AppliedIndexSha256, StringComparison.OrdinalIgnoreCase) &&
+            UsesPerFileRestore(currentHash, state, request) &&
             store.Exists())
-        {
-            return RestorePerFile(state, request.Game, store);
-        }
+            return RestorePerFile(state, request.Game, store, request.UndoTiers);
 
         if (string.IsNullOrWhiteSpace(backup))
             throw new InvalidOperationException("No backup path is known. Run with --backup <file> or apply first.");
@@ -335,7 +420,7 @@ public sealed class AppService
             throw new FileNotFoundException("Backup not found", backup);
 
         var backupHash = HashUtil.Sha256File(backup);
-        if (state != null && !currentHash.Equals(state.AppliedIndexSha256, StringComparison.OrdinalIgnoreCase))
+        if (state != null && !IsOneOfOurs(currentHash, state))
         {
             if (!request.Force)
                 throw new InvalidOperationException(
@@ -385,17 +470,97 @@ public sealed class AppService
     }
 
     /// <summary>
+    /// Re-opens the committed target and checks that the index really points at what apply says it
+    /// wrote. Two layers, because the realistic failures are systematic (wrong coordinates: every
+    /// record) or positional (a truncated tail: the last records of a bundle), and random sampling
+    /// catches neither:
+    ///   (a) every entry, free — size and bundle/offset straight from the parsed index, no reads;
+    ///   (b) content hash on a deterministic bounded set: the first and the last entry written into
+    ///       each custom bundle. Those are the two positions where a short write shows up.
+    /// Zero-length writes are fully covered by layer (a): their content is defined as "nothing", and
+    /// re-opening the enclosing bundle 73,000 times to prove that would cost more than the apply.
+    /// </summary>
+    // Public so the negative path (a record that does not match) can be driven from the tests:
+    // an integrity check that is only ever exercised when it passes proves nothing.
+    public void VerifyApplied(IReadOnlyList<PatchedFileEntry> entries, GameLocation game)
+    {
+        if (entries.Count == 0)
+            return;
+
+        var boundaries = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var last in entries.GroupBy(e => e.AppliedBundlePath, StringComparer.OrdinalIgnoreCase))
+        {
+            if (last.FirstOrDefault() is { } first)
+                boundaries.Add(first.Path);
+            if (last.LastOrDefault() is { } tail)
+                boundaries.Add(tail.Path);
+        }
+
+        using var read = IndexSession.OpenReadOnly(game);
+
+        var checkedContent = 0;
+        foreach (var entry in entries)
+        {
+            if (!read.TryGetFile(entry.Path, out var record) || record == null)
+                throw new InvalidDataException(
+                    $"Post-apply verification: {entry.Path} is missing from the committed index.");
+
+            if (record.Size != entry.AppliedSize)
+                throw new InvalidDataException(
+                    $"Post-apply verification: {entry.Path} is {record.Size} bytes, apply recorded {entry.AppliedSize}.");
+
+            var bundlePath = record.BundleRecord?.Path ?? "";
+            if (!string.Equals(bundlePath, entry.AppliedBundlePath, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException(
+                    $"Post-apply verification: {entry.Path} points at bundle '{bundlePath}', " +
+                    $"apply wrote it into '{entry.AppliedBundlePath}'.");
+
+            if (boundaries.Contains(entry.Path) && entry.AppliedSize > 0)
+            {
+                var live = record.Read().ToArray();
+                if (HashUtil.Sha256Bytes(live).Equals(entry.AppliedSha256, StringComparison.OrdinalIgnoreCase) == false)
+                    throw new InvalidDataException(
+                        $"Post-apply verification: {entry.Path} does not contain the bytes apply wrote.");
+
+                checkedContent++;
+            }
+        }
+
+        AppLog.Info(_paths,
+            $"Post-apply verification: {entries.Count} records checked in the committed index, " +
+            $"{checkedContent} contents hashed.");
+    }
+
+    /// <summary>
+    /// Whether a persisted entry belongs to the tiers being undone. An entry whose tier cannot be
+    /// determined is never in scope: undoing something unclassifiable is the unrecoverable
+    /// direction, leaving it suppressed is not.
+    /// </summary>
+    private static bool InScope(PatchedFileEntry entry, IReadOnlySet<RiskTier>? undoTiers)
+    {
+        if (undoTiers is not { Count: > 0 })
+            return true;
+
+        return RiskTiers.TierOfEntry(entry.Tier, entry.Strategy, entry.Path) is { } tier &&
+               undoTiers.Contains(tier);
+    }
+
+    /// <summary>
     /// Restores every file this tool suppressed, but only those still consistent with the bytes
     /// it wrote at apply time: their record is redirected back to the original coordinates in the
     /// official bundle (no data is rewritten, so the custom bundle files become orphans and are
     /// dropped afterwards). Files whose content no longer matches (game update, external edit)
     /// are skipped and keep their current content — that is what prevents post-update downgrades.
+    /// With <paramref name="undoTiers"/> set, only entries in those tiers are touched; the rest stay
+    /// suppressed and stay in the state file.
     /// </summary>
-    private RestoreResult RestorePerFile(AppState state, GameLocation game, TargetStore store)
+    private RestoreResult RestorePerFile(AppState state, GameLocation game, TargetStore store,
+        IReadOnlySet<RiskTier>? undoTiers = null)
     {
         var restored = 0;
         var skipped = new List<string>();
         var unresolved = new List<PatchedFileEntry>();
+        var kept = new List<PatchedFileEntry>();
 
         using (var work = IndexSession.OpenWorkCopy(game))
         {
@@ -411,6 +576,14 @@ public sealed class AppService
 
             foreach (var entry in state.PatchedFiles)
             {
+                // Out-of-scope entries are neither redirected nor forgotten: they stay suppressed
+                // and stay in the state, so a later restore (or a re-apply) can still account for them.
+                if (!InScope(entry, undoTiers))
+                {
+                    kept.Add(entry);
+                    continue;
+                }
+
                 if (!work.TryGetFile(entry.Path, out var record) || record == null)
                 {
                     skipped.Add(entry.Path); // removed/renamed by the update
@@ -468,7 +641,14 @@ public sealed class AppService
             AppLog.Info(_paths, $"Per-file restore: removed {deleted} orphan custom bundle(s).");
         }
 
-        if (unresolved.Count == 0)
+        // Kept = out-of-scope + unresolved. They differ in why, but a later restore has to treat
+        // them the same way: still suppressed, still ours, still pointing into a custom bundle.
+        var preserved = kept.Count > 0 ? [.. kept, .. unresolved] : unresolved;
+        var partialHash = state.PartialRestoreIndexSha256;
+        if (restored > 0)
+            partialHash = store.HashIndex();
+
+        if (preserved.Count == 0)
         {
             StateStore.Delete(_paths);
             AppLog.Info(_paths,
@@ -476,8 +656,10 @@ public sealed class AppService
         }
         else
         {
-            // Keep the old applied/original hashes so a later restore stays on the safe per-file
-            // path; only the still-suppressed entries remain tracked.
+            // Keep the original/applied hashes so a later restore still recognises this index as
+            // ours; PartialRestoreIndexSha256 records the index as this restore left it, so the
+            // next apply rolls back to the backup instead of declaring a game update (and being
+            // "fixed" with --force, which would delete the bundles these entries live in).
             StateStore.Save(_paths, new AppState
             {
                 SchemaVersion = state.SchemaVersion,
@@ -487,23 +669,28 @@ public sealed class AppService
                 TargetKind = state.TargetKind,
                 OriginalIndexSha256 = state.OriginalIndexSha256,
                 AppliedIndexSha256 = state.AppliedIndexSha256,
+                PartialRestoreIndexSha256 = partialHash,
                 BackupPath = state.BackupPath,
                 RulePackName = state.RulePackName,
                 RulePackPath = state.RulePackPath,
                 Preset = state.Preset,
                 AppliedAt = state.AppliedAt,
-                FileCount = unresolved.Count,
+                FileCount = preserved.Count,
                 CustomBundleFiles = store.ListCustomBundles().ToList(),
-                PatchedFiles = unresolved
+                PatchedFiles = preserved
             });
             AppLog.Warn(_paths,
-                $"Per-file restore: restored={restored}, skipped={skipped.Count}, unresolved={unresolved.Count} " +
-                "(original bundle missing; their suppression is kept). Verify game files, then restore again.");
+                $"Per-file restore: restored={restored}, skipped={skipped.Count}, kept={preserved.Count} " +
+                $"(out of scope: {kept.Count}, original bundle missing: {unresolved.Count}).");
         }
 
-        var message = unresolved.Count > 0
-            ? $"Per-file restore: {restored} restored, {skipped.Count} skipped, {unresolved.Count} kept suppressed (original bundle missing)."
-            : $"Per-file restore: {restored} restored, {skipped.Count} skipped (changed by update, kept new content).";
+        var message = undoTiers is { Count: > 0 }
+            ? $"Per-file restore of {string.Join("/", undoTiers.OrderBy(t => t))}: " +
+              $"{restored} restored, {kept.Count} kept suppressed, {unresolved.Count} unresolvable, " +
+              $"{skipped.Count} skipped."
+            : unresolved.Count > 0
+                ? $"Per-file restore: {restored} restored, {skipped.Count} skipped, {unresolved.Count} kept suppressed (original bundle missing)."
+                : $"Per-file restore: {restored} restored, {skipped.Count} skipped (changed by update, kept new content).";
         if (skipped.Count > 0)
         {
             message += " Skipped: " + string.Join(", ", skipped.Take(10)) +
@@ -512,12 +699,14 @@ public sealed class AppService
 
         return new RestoreResult
         {
-            RestoredIndex = restored > 0,
+            RestoredIndex = false,
             CleanedCustomBundles = cleanedBundles,
             PerFile = true,
             FilesRestored = restored,
             FilesSkipped = skipped.Count,
             FilesUnresolved = unresolved.Count,
+            FilesKept = kept.Count,
+            Scoped = undoTiers is { Count: > 0 },
             SkippedPaths = skipped,
             Message = message
         };
@@ -578,10 +767,10 @@ public sealed class AppService
         var store = TargetStore.For(game);
         var state = LoadMatchingState(game);
         var currentHash = store.Exists() ? store.HashIndex() : "";
-        var isModified = state != null &&
-                         currentHash.Equals(state.AppliedIndexSha256, StringComparison.OrdinalIgnoreCase);
-        var updated = state != null &&
-                      !currentHash.Equals(state.AppliedIndexSha256, StringComparison.OrdinalIgnoreCase) &&
+        // "Ours" is either hash: what apply produced, or what a tier-filtered restore left behind.
+        var isOurs = state != null && IsOneOfOurs(currentHash, state);
+        var isModified = isOurs;
+        var updated = state != null && !isOurs &&
                       !currentHash.Equals(state.OriginalIndexSha256, StringComparison.OrdinalIgnoreCase);
 
         return new StatusResult
@@ -639,9 +828,15 @@ public sealed class AppService
         {
             foreach (var rule in category.Rules)
             {
-                if (rule.Experimental && !request.IncludeExperimental)
+                // Tier ceiling, checked before dedup/ignore/missing so the skip buckets stay
+                // comparable with the "attempted" totals the UI sums up.
+                if (rule.Tier > request.MaxTier)
                 {
                     plan.SkippedExperimental.Add(rule.Path);
+                    if (rule.Tier == RiskTier.Material)
+                        plan.SkippedMaterialCount++;
+                    else
+                        plan.SkippedFxCount++;
                     continue;
                 }
 
@@ -678,13 +873,26 @@ public sealed class AppService
                         continue;
                     }
                 }
+                else if (rule.Strategy is StrategyKind.Empty or StrategyKind.NullPet or StrategyKind.NullMaterial
+                         or StrategyKind.NullGraph or StrategyKind.NullEffectPack && record.Size == 0)
+                {
+                    // Preview paths (pscli plan, apply without --yes, the GUI's material dialog) build
+                    // a plan against the *live* index, which is already blanked after an apply. Without
+                    // this they would report re-writing 0 bytes over 0 bytes as a change — inflating
+                    // the counts the confirmation dialog shows, and turning `plan`'s "nothing to do"
+                    // exit code into a lie. During Apply itself the files are back to their original
+                    // size (the baseline rollback runs first), so real writes are never filtered out.
+                    plan.Unchanged.Add(rule.Path);
+                    continue;
+                }
 
                 plan.Changes.Add(new PlannedChange(
                     rule.Path,
                     rule.Strategy,
                     record.Size,
                     category.Id,
-                    rule.Experimental));
+                    rule.Tier,
+                    rule.Tier > RiskTier.Safe));
             }
         }
 

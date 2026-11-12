@@ -117,5 +117,57 @@ if ((Exp-Size) -ne $expected) { throw "restore did not give $expPath back" }
 $status = (dotnet $Cli status --index $expIndex) -join "`n"
 if ($status -notmatch "modified      : False") { throw "restore must return to original`n$status" }
 
+# Risk tiers on the CLI: the value option must parse, must validate, and --include-experimental
+# must still reach the top tier — scripts written against the old boolean cannot silently narrow.
+Write-Host "== CLI end-to-end: risk tiers =="
+$tiers = Join-Path $Tmp "tiers"
+$tiersBundles = Join-Path $tiers "Bundles2"
+$tiersIndex = Join-Path $tiersBundles "_.index.bin"
+$tiersPack = Join-Path $tiers "pack.json"
+$tiersPet = "metadata/effects/spells/fire/spark.pet"
+
+function Tier-Size {
+    $read = (dotnet $Cli read-file --index $tiersIndex --path $tiersPet) -join "`n"
+    if ($read -match "size\s*:\s*(\d+)") { return [int]$Matches[1] }
+    throw "read-file did not report a size`n$read"
+}
+
+dotnet $Cli fixture --out $tiersBundles --path $tiersPet --content "PARTICLE-BYTES" | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "tier fixture failed" }
+dotnet $Cli build-rules --index $tiersIndex --out $tiersPack --name "Tier Test" --build synthetic | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "tier build-rules failed" }
+
+dotnet $Cli apply --index $tiersIndex --pack $tiersPack --preset safe --experimental off --yes | Out-Null
+if ((Tier-Size) -eq 0) { throw "--experimental off blanked $tiersPet" }
+
+$apply = (dotnet $Cli apply --index $tiersIndex --pack $tiersPack --preset safe --experimental fx --yes) -join "`n"
+if ($apply -notmatch "files      : 1") { throw "--experimental fx should blank the particle rule`n$apply" }
+if ((Tier-Size) -ne 0) { throw "--experimental fx did not blank $tiersPet" }
+
+dotnet $Cli plan --index $tiersIndex --pack $tiersPack --experimental everything | Out-Null
+if ($LASTEXITCODE -eq 0) { throw "--experimental accepted a bogus tier" }
+
+dotnet $Cli restore --index $tiersIndex --yes | Out-Null
+$apply = (dotnet $Cli apply --index $tiersIndex --pack $tiersPack --preset safe --include-experimental --yes) -join "`n"
+if ($apply -notmatch "files      : 1") { throw "--include-experimental stopped meaning material`n$apply" }
+if ((Tier-Size) -ne 0) { throw "--include-experimental did not blank $tiersPet" }
+dotnet $Cli restore --index $tiersIndex --yes | Out-Null
+
+# Scoped restore: --undo-tiers material leaves the single fx entry suppressed (kept=1, still blank);
+# --undo-tiers fx covers every entry and so takes the whole-index path. Assert outcomes.
+dotnet $Cli apply --index $tiersIndex --pack $tiersPack --preset safe --experimental fx --yes | Out-Null
+$undo = (dotnet $Cli restore --index $tiersIndex --undo-tiers material --yes) -join "`n"
+if ($undo -notmatch "kept=1") { throw "--undo-tiers material should keep the fx suppression`n$undo" }
+if ((Tier-Size) -ne 0) { throw "--undo-tiers material undid the fx blanking" }
+
+$undo = (dotnet $Cli restore --index $tiersIndex --undo-tiers fx --yes) -join "`n"
+if ((Tier-Size) -eq 0) { throw "--undo-tiers fx did not give $tiersPet back`n$undo" }
+if (Test-Path (Join-Path $env:POE2SMOOTHER_HOME "state.json")) { throw "a restore that undoes every entry must clear the state file" }
+
+dotnet $Cli restore --index $tiersIndex --undo-tiers fx --force --yes | Out-Null
+if ($LASTEXITCODE -eq 0) { throw "--undo-tiers accepted --force" }
+dotnet $Cli restore --index $tiersIndex --undo-tiers everything --yes | Out-Null
+if ($LASTEXITCODE -eq 0) { throw "--undo-tiers accepted a bogus tier" }
+
 Write-Host ""
 Write-Host "ALL TESTS PASSED"

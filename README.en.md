@@ -65,7 +65,7 @@ offers "Run as admin" in the top-right corner.
 3. **Build rules**: scans the index of **your own current client** to produce the list of suppressible effects — the rule pack does not depend on anyone's fixed list, so regenerating it once after a game update is enough.
 4. **Effects tab → pick a preset**: newcomers should use `safe` (the default), which only touches player skill and appearance effects and keeps every monster, boss and dangerous-mechanic effect.
 5. **(Optional tuning)**: search which group an effect belongs to, tick or untick whole groups, add paths you never want touched to the ignore list, and save the selection as a profile to load next time.
-6. **Home → Apply**: backs up first, then writes (the button requires a double-click to confirm). The matching effects disappear in game. If it reports "0 files changed", the tool tells you why (stale rule pack, everything ignored, experimental strategy off…) and what to do next.
+6. **Home → Apply**: backs up first, then writes (the button requires a double-click to confirm). The matching effects disappear in game. If it reports "0 files changed", the tool tells you why (stale rule pack, everything ignored, current risk tier excludes those assets…) and what to do next.
 7. **Verify in game**. To get the full visuals back: **Home → Restore** (also double-click to confirm) — everything comes back from the backup, and you can re-apply at any time.
 
 ## Equivalent command-line workflow
@@ -88,7 +88,18 @@ If auto-detection fails, append `--index <.../Bundles2/_.index.bin>`, `--game <g
 - Standalone client (experimental): the index lives *inside* `Content.ggpk`, so writes modify the container in place with no atomic commit. The backup therefore exports only the inner index (tens of MB, not the whole ~40 GB container). Don't kill the process or cut power while applying; if it does get interrupted, run "Restore" again to write the backed-up index back. The per-file restore logic is identical to the Steam path.
 - `.ao` files are PoE2's effect-attaching scripts: the tool removes the `AddAttached` / `AddEffectPack` / `RemoveEffectPack` calls inside them, so effects stop attaching to skills and objects. It's "script surgery" — the lowest-risk strategy, and the bulk of what `safe` does.
 - `.dds` textures: replaced with a 1×1 transparent texture.
-- Emptying `.pet` / `.epk` / `.mat` / `.fxgraph` outright is an **experimental** strategy, off by default (needs an explicit tick / `--include-experimental`).
+- Emptying `.pet` / `.epk` / `.fxgraph` / `.aoc` (effect resources) and `.mat` (materials) outright is an
+  **experimental** strategy, off by default, and split into two separate tiers: `fx` blanks only effect
+  resources, `material` is the one that touches materials — those are shared with ordinary rendering
+  (ground, characters, objects), so blanking them can black out normal geometry too. Keep the scale in mind:
+  one measured `safe` + all-experimental run on this machine wrote **73,581 zero-byte files**
+  (`.mat` 50,399 / `.pet` 15,556 / `.epk` 5,054 / `.fxgraph` 2,572). In the GUI it is a "risk tier" drop-down
+  (choosing material asks for a second, in-window confirmation listing the bytes that will be destroyed);
+  on the CLI it is `--experimental fx|material`, and the old `--include-experimental` is exactly
+  `--experimental material`, so its meaning did not narrow. If a tier turns out to be too much, you can undo
+  just the materials and keep the script surgery: the "Restore scope" box on the Home tab, or
+  `pscli restore --undo-tiers material`. Details, plus the safer alternatives that are *not* implemented yet,
+  are in [`docs/experimental-risk-tiers.md`](docs/experimental-risk-tiers.md).
 - The default ignore list protects monsters, bosses and dangerous-mechanic assets, so the picture actually becomes *easier* to read once suppressed: you can see which ground effects you are standing in.
 
 ## Preset cheat sheet
@@ -146,6 +157,8 @@ passes it in with `-p:Version=`, which is what both the GUI title and `pscli ver
 build with no tag reports `0.0.0-dev`. To pin a version by hand: `PS_VERSION=1.2.3 bash scripts/build-linux.sh`.
 
 Known limitations: two client layouts are supported — the Steam version and the standalone `Content.ggpk`
-(experimental); the experimental empty-out strategy is off by default; neither Windows nor Linux artifacts
+(experimental); the experimental empty-out strategy is off by default, and it writes zero bytes rather than a
+per-extension minimal valid empty resource (the material tier is the riskiest of them — see
+`docs/experimental-risk-tiers.md`); neither Windows nor Linux artifacts
 are code-signed. Check the license terms of LibGGPK3 / LibBundledGGPK3 (AGPL-3.0-or-later) before
 redistributing or commercial use.

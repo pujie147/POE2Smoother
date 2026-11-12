@@ -52,7 +52,7 @@ public static class RulePackBuilder
                 continue;
             }
 
-            if (!TryGetStrategy(path, out var strategy, out var experimental))
+            if (!TryGetStrategy(path, out var strategy))
             {
                 skipped++;
                 continue;
@@ -77,11 +77,14 @@ public static class RulePackBuilder
                 categories.Add(categoryId, category);
             }
 
+            var normalized = path.Replace('\\', '/');
             category.Rules.Add(new Rule
             {
-                Path = path.Replace('\\', '/'),
+                Path = normalized,
                 Strategy = strategy,
-                Experimental = experimental
+                // The tier is the single source of truth for what counts as experimental; the flag
+                // stays in the pack JSON so older builds and the GUI counters keep working.
+                Experimental = RiskTiers.Of(strategy, normalized) > RiskTier.Safe
             });
         }
 
@@ -110,44 +113,26 @@ public static class RulePackBuilder
         return (pack, stats);
     }
 
-    public static bool TryGetStrategy(string path, out StrategyKind strategy, out bool experimental)
+    /// <summary>
+    /// Extension to replacement strategy. Whether that replacement is risky is *not* encoded here —
+    /// <see cref="RiskTiers"/> derives the tier from the strategy, so the two can never disagree.
+    /// </summary>
+    public static bool TryGetStrategy(string path, out StrategyKind strategy)
     {
         var ext = System.IO.Path.GetExtension(path).ToLowerInvariant();
-        switch (ext)
+        strategy = ext switch
         {
-            case ".ao":
-                strategy = StrategyKind.StripAttachments;
-                experimental = false;
-                return true;
-            case ".dds":
-                strategy = StrategyKind.TransparentDds;
-                experimental = false;
-                return true;
-            case ".pet":
-                strategy = StrategyKind.NullPet;
-                experimental = true;
-                return true;
-            case ".epk":
-                strategy = StrategyKind.NullEffectPack;
-                experimental = true;
-                return true;
-            case ".mat":
-                strategy = StrategyKind.NullMaterial;
-                experimental = true;
-                return true;
-            case ".fxgraph":
-                strategy = StrategyKind.NullGraph;
-                experimental = true;
-                return true;
-            case ".aoc":
-                strategy = StrategyKind.Empty;
-                experimental = true;
-                return true;
-            default:
-                strategy = StrategyKind.Keep;
-                experimental = false;
-                return false;
-        }
+            ".ao" => StrategyKind.StripAttachments,
+            ".dds" => StrategyKind.TransparentDds,
+            ".pet" => StrategyKind.NullPet,
+            ".epk" => StrategyKind.NullEffectPack,
+            ".mat" => StrategyKind.NullMaterial,
+            ".fxgraph" => StrategyKind.NullGraph,
+            ".aoc" => StrategyKind.Empty,
+            _ => StrategyKind.Keep
+        };
+
+        return strategy != StrategyKind.Keep;
     }
 
     private static bool IsSupportedRoot(string path)

@@ -344,8 +344,16 @@ if (kindText.Text?.Contains("Steam") != true)
 
     var loopGame = PsCore.SteamLibraryLocator.FromIndex(loopIndex);
     var loopWindow = new MainWindow();
-    var loopExperimental = loopWindow.FindControl<CheckBox>("ExperimentalBox")
-                           ?? throw new Exception("ExperimentalBox missing");
+    var loopTier = loopWindow.FindControl<ComboBox>("TierBox")
+                   ?? throw new Exception("TierBox missing");
+    // Selecting through the real combo box runs OnTierChanged, so this is what a user does —
+    // not just poking a field. Labels come from TierItem.For, the same source the window builds.
+    void SetTier(RiskTier tier)
+    {
+        loopTier.SelectedItem = TierItem.For(tier);
+        Dispatcher.UIThread.RunJobs();
+    }
+    RiskTier CurrentTier() => (loopTier.SelectedItem as TierItem)?.Tier ?? RiskTier.Safe;
     var loopApply = loopWindow.FindControl<Button>("ApplyButton") ?? throw new Exception("ApplyButton missing");
     var loopRestore = loopWindow.FindControl<Button>("RestoreButton") ?? throw new Exception("RestoreButton missing");
     var loopStatus = loopWindow.FindControl<TextBlock>("StatusText") ?? throw new Exception("StatusText missing");
@@ -358,8 +366,8 @@ if (kindText.Text?.Contains("Steam") != true)
     refreshStatus.Invoke(loopWindow, null);
     Dispatcher.UIThread.RunJobs();
 
-    if (loopExperimental.IsChecked != false)
-        throw new Exception("experimental must start unticked");
+    if (CurrentTier() != RiskTier.Safe)
+        throw new Exception($"a fresh window must start on the safe tier, got {CurrentTier()}");
     if (File.Exists(loopStateFile))
         throw new Exception("the loop needs a clean state file to start from");
 
@@ -397,40 +405,98 @@ if (kindText.Text?.Contains("Steam") != true)
         return record!.Read().ToArray();
     }
 
-    // 未勾选: only the .ao is suppressed, and the two blanking rules have to be reported
-    // (in the status buckets and as a log hint pointing at the checkbox).
+    // Safe tier: only the .ao is suppressed, and both blanking rules have to be reported —
+    // split by tier, so a 50k .mat class can't hide inside one "experimental" number.
     ClickTwice(loopApply);
-    PumpUntil(ApplySettled, "unticked apply");
+    PumpUntil(ApplySettled, "safe apply");
     if (loopStatus.Text!.Contains("应用完成") != true)
-        throw new Exception($"unticked apply failed: {loopStatus.Text}");
-    if (!loopStatus.Text.Contains("1/3 active") || !loopStatus.Text.Contains("实验 2 / experimental"))
-        throw new Exception($"skip bucket not reported while unticked: {loopStatus.Text}");
-    if (loopLog.Text!.Contains("勾选“实验性资源”") != true)
-        throw new Exception($"loading a pack with blanking rules should hint at the box: {loopLog.Text}");
+        throw new Exception($"safe apply failed: {loopStatus.Text}");
+    if (!loopStatus.Text.Contains("1/3 active") ||
+        !loopStatus.Text.Contains("实验 2 / experimental") ||
+        !loopStatus.Text.Contains("特效 1") || !loopStatus.Text.Contains("材质 1"))
+        throw new Exception($"skip buckets not reported per tier while on safe: {loopStatus.Text}");
+    if (loopLog.Text!.Contains("skipped at tier") != true)
+        throw new Exception($"loading a pack with blanking rules should hint at the tier box: {loopLog.Text}");
     if (LiveBytes(loopPetPath).SequenceEqual(loopPetBytes) != true)
-        throw new Exception(".pet must stay untouched while the box is unticked");
+        throw new Exception(".pet must stay untouched on the safe tier");
     if (LiveBytes(loopMatPath).SequenceEqual(loopMatBytes) != true)
-        throw new Exception(".mat must stay untouched while the box is unticked");
+        throw new Exception(".mat must stay untouched on the safe tier");
 
-    // 勾选实验性: the same click now has to reach the blanking rules too — the second apply
-    // resets to the backup first, so the .ao is re-stripped instead of reporting "0 files".
-    loopExperimental.IsChecked = true;
+    // fx tier: the particle file blanks, the material still does not. This split is the whole
+    // point of the tier box; the old checkbox could not express it at all.
+    SetTier(RiskTier.Fx);
     ClickTwice(loopApply);
-    PumpUntil(ApplySettled, "ticked apply");
+    PumpUntil(ApplySettled, "fx apply");
     if (loopStatus.Text!.Contains("应用完成") != true)
-        throw new Exception($"ticked apply failed: {loopStatus.Text}");
-    if (!loopStatus.Text.Contains("3/3 active") || !loopStatus.Text.Contains("实验 0 / experimental"))
-        throw new Exception($"ticking should move both skipped rules into the change set: {loopStatus.Text}");
+        throw new Exception($"fx apply failed: {loopStatus.Text}");
     if (LiveBytes(loopPetPath).Length != 0)
-        throw new Exception("ticked apply must blank the .pet");
+        throw new Exception("fx tier must blank the .pet");
+    if (LiveBytes(loopMatPath).SequenceEqual(loopMatBytes) != true)
+        throw new Exception("fx tier must leave the .mat alone");
+    if (!loopStatus.Text.Contains("材质 1"))
+        throw new Exception($"fx apply should still report the one material rule it skipped: {loopStatus.Text}");
+
+    ClickTwice(loopRestore);
+    PumpUntil(RestoreSettled, "fx restore");
+
+    // Material tier: one click opens the in-window confirmation instead of writing, and only
+    // the explicit confirm button performs the write (it replaces the four-second arm).
+    SetTier(RiskTier.Material);
+    loopApply.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+    Dispatcher.UIThread.RunJobs();
+    var loopConfirmPanel = loopWindow.FindControl<Border>("MaterialConfirmPanel")
+                           ?? throw new Exception("MaterialConfirmPanel missing");
+    var loopConfirm = loopWindow.FindControl<Button>("MaterialConfirmButton")
+                      ?? throw new Exception("MaterialConfirmButton missing");
+    var loopConfirmText = loopWindow.FindControl<TextBlock>("MaterialConfirmText")
+                          ?? throw new Exception("MaterialConfirmText missing");
+    PumpUntil(() => loopConfirmPanel.IsVisible == true, "material confirmation panel");
+    if (loopConfirmText.Text!.Contains("1 个 .mat") != true)
+        throw new Exception($"the panel must name what it is about to destroy: {loopConfirmText.Text}");
+
+    loopConfirm.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+    PumpUntil(ApplySettled, "material apply");
+    if (loopStatus.Text!.Contains("应用完成") != true)
+        throw new Exception($"material apply failed: {loopStatus.Text}");
+    if (!loopStatus.Text.Contains("3/3 active") || !loopStatus.Text.Contains("实验 0 / experimental"))
+        throw new Exception($"the material tier should move both skipped rules into the change set: {loopStatus.Text}");
+    if (LiveBytes(loopPetPath).Length != 0)
+        throw new Exception("material apply must blank the .pet");
     if (LiveBytes(loopMatPath).Length != 0)
-        throw new Exception("ticked apply must blank the .mat");
+        throw new Exception("material apply must blank the .mat");
     if (Encoding.UTF8.GetString(LiveBytes(loopAoPath)).Contains("AddAttached"))
-        throw new Exception("ticked apply must keep suppressing the .ao");
+        throw new Exception("material apply must keep suppressing the .ao");
     if (!File.Exists(loopStateFile))
         throw new Exception("apply must leave a state file behind");
 
-    // restore: everything the tick wrote has to go back, byte for byte.
+    // The flagship scenario, through the UI: the materials were the mistake, the rest is wanted.
+    // A scoped restore must give the .mat files back and leave the script surgery and the blanked
+    // particle file exactly where they were — the old build could only undo all of it or none.
+    var loopScopeBox = loopWindow.FindControl<ComboBox>("RestoreScopeBox")
+                       ?? throw new Exception("RestoreScopeBox missing");
+    var materialOnly = loopScopeBox.Items.OfType<RestoreScopeItem>()
+        .First(item => item.Tiers is { Count: 1 } only && only.Contains(RiskTier.Material));
+    loopScopeBox.SelectedItem = materialOnly;
+    Dispatcher.UIThread.RunJobs();
+
+    ClickTwice(loopRestore);
+    PumpUntil(RestoreSettled, "scoped restore");
+    if (loopStatus.Text!.Contains("还原完成") != true)
+        throw new Exception($"scoped restore failed: {loopStatus.Text}");
+    if (LiveBytes(loopMatPath).SequenceEqual(loopMatBytes) != true)
+        throw new Exception("a material-scoped restore must give the .mat bytes back");
+    if (LiveBytes(loopPetPath).Length != 0)
+        throw new Exception("a material-scoped restore must leave the blanked .pet alone");
+    if (Encoding.UTF8.GetString(LiveBytes(loopAoPath)).Contains("AddAttached"))
+        throw new Exception("a material-scoped restore must leave the .ao surgery in place");
+    if (!File.Exists(loopStateFile))
+        throw new Exception("the kept suppressions must still be tracked after a scoped restore");
+    if (loopState.Text!.Contains("原始 / original") == true)
+        throw new Exception($"status must not claim an original client after a partial restore: {loopState.Text}");
+
+    // Back to restoring everything: the remainder has to go back too, and the state file with it.
+    loopScopeBox.SelectedItem = loopScopeBox.Items.OfType<RestoreScopeItem>().First(item => item.Tiers == null);
+    Dispatcher.UIThread.RunJobs();
     ClickTwice(loopRestore);
     PumpUntil(RestoreSettled, "restore");
     if (loopStatus.Text!.Contains("还原完成") != true)
@@ -446,20 +512,26 @@ if (kindText.Text?.Contains("Steam") != true)
     if (loopState.Text!.Contains("原始 / original") != true)
         throw new Exception($"status should read original after restore: {loopState.Text}");
 
-    // 勾选实验性 is a preference: the tick has to survive a restart, and an untick has to persist too.
+    // The tier is a preference: it has to survive a restart, serialized as a string (these option
+    // objects have no JsonStringEnumConverter, so an enum property would land as an integer),
+    // and the legacy boolean must stay mirrored for older builds.
     var saveSettings = typeof(MainWindow).GetMethod("SaveSettings",
         BindingFlags.Instance | BindingFlags.NonPublic) ?? throw new Exception("SaveSettings not found");
     saveSettings.Invoke(loopWindow, null);
     var savedSettings = File.ReadAllText(Path.Combine(home, "settings.json"));
+    if (!savedSettings.Contains("\"ExperimentalTier\": \"material\""))
+        throw new Exception($"the tier must be persisted as a string: {savedSettings}");
     if (!savedSettings.Contains("\"IncludeExperimental\": true"))
-        throw new Exception($"the tick must be persisted: {savedSettings}");
+        throw new Exception($"the legacy boolean must be mirrored: {savedSettings}");
     var reopened = new MainWindow();
-    if (reopened.FindControl<CheckBox>("ExperimentalBox")?.IsChecked != true)
-        throw new Exception("a reopened window must restore the experimental tick");
+    var reopenedTier = reopened.FindControl<ComboBox>("TierBox")
+                       ?? throw new Exception("TierBox missing on a reopened window");
+    if ((reopenedTier.SelectedItem as TierItem)?.Tier != RiskTier.Material)
+        throw new Exception("a reopened window must restore the material tier");
     if (File.ReadAllText(Path.Combine(home, "settings.json")) != savedSettings)
         throw new Exception("opening a window must not rewrite the saved settings");
 
-    // A profile carries the tick too: 存档案 → 取消勾选 → 载入档案 must put it back on.
+    // A profile carries the tier too: 存档案 → 降档 → 载入档案 must put it back.
     var loopProfileName = loopWindow.FindControl<TextBox>("ProfileNameBox")
                           ?? throw new Exception("ProfileNameBox missing");
     var saveProfile = typeof(MainWindow).GetMethod("OnSaveProfile",
@@ -467,21 +539,23 @@ if (kindText.Text?.Contains("Steam") != true)
     var loadProfile = typeof(MainWindow).GetMethod("OnLoadProfile",
         BindingFlags.Instance | BindingFlags.NonPublic) ?? throw new Exception("OnLoadProfile not found");
 
-    loopExperimental.IsChecked = true;
+    SetTier(RiskTier.Material);
     loopProfileName.Text = "ui-experimental";
     saveProfile.Invoke(loopWindow, new object?[] { null, null });
-    loopExperimental.IsChecked = false;
+    SetTier(RiskTier.Safe);
     loadProfile.Invoke(loopWindow, new object?[] { null, null });
     Dispatcher.UIThread.RunJobs();
-    if (loopExperimental.IsChecked != true)
-        throw new Exception("loading a profile must restore the experimental tick");
+    if (CurrentTier() != RiskTier.Material)
+        throw new Exception("loading a profile must restore its saved tier");
 
-    loopExperimental.IsChecked = false;
+    // …and dropping the tier back has to persist too — a reopened window must not stay on material.
+    SetTier(RiskTier.Safe);
     saveSettings.Invoke(loopWindow, null);
-    if ((new MainWindow()).FindControl<CheckBox>("ExperimentalBox")?.IsChecked == true)
-        throw new Exception("a reopened window must restore an unticked experimental box");
+    if ((new MainWindow()).FindControl<ComboBox>("TierBox") is { SelectedItem: TierItem reopenedSafe } &&
+        reopenedSafe.Tier != RiskTier.Safe)
+        throw new Exception("a reopened window must restore the safe tier");
 
-    // Leaving the box off after the loop means a later apply still never touches those files.
+    // Leaving the tier on safe after the loop means a later apply still never touches those files.
     ClickTwice(loopApply);
     PumpUntil(ApplySettled, "re-apply after restore");
     if (loopStatus.Text!.Contains("1/3 active") != true)

@@ -59,6 +59,30 @@
                       Background="#5A3B3B" Foreground="White"/>
             </StackPanel>
 
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <TextBlock Text="还原范围 / Restore scope" VerticalAlignment="Center" FontWeight="SemiBold"/>
+              <ComboBox x:Name="RestoreScopeBox" Width="380" Height="42"
+                        ToolTip.Tip="只撤销部分档位:其余屏蔽保持生效 / Undo only some tiers; the rest stay suppressed"/>
+              <TextBlock x:Name="RestoreScopeHint" VerticalAlignment="Center"
+                         Foreground="#8E97A6" TextWrapping="Wrap"/>
+            </StackPanel>
+
+            <Border x:Name="MaterialConfirmPanel" IsVisible="False" Background="#3A2A22"
+                    CornerRadius="8" Padding="12">
+              <StackPanel Spacing="8">
+                <TextBlock x:Name="MaterialConfirmText" TextWrapping="Wrap" FontWeight="SemiBold"/>
+                <TextBlock TextWrapping="Wrap" Foreground="#D8C4B0"
+                  Text="材质被置空后,普通渲染(地面/角色/物体)可能一起变黑或缺失;工具会先备份,之后可以只撤销材质。 / Blanking materials can also black out ordinary rendering (ground, characters, objects). A backup is always written first, and materials can be restored on their own afterwards."/>
+                <StackPanel Orientation="Horizontal" Spacing="10">
+                  <Button x:Name="MaterialConfirmButton" Content="确认置空材质 / Confirm material blanking"
+                          Click="OnConfirmMaterialApply" Height="44" Padding="18,0" FontSize="15"
+                          Background="#B1552F" Foreground="White"/>
+                  <Button Content="取消 / Cancel" Click="OnCancelMaterialApply"
+                          Height="44" Padding="18,0" FontSize="15"/>
+                </StackPanel>
+              </StackPanel>
+            </Border>
+
             <TextBlock x:Name="PackText" TextWrapping="Wrap" Foreground="#AAB2C0"/>
             <TextBlock x:Name="StateText" TextWrapping="Wrap" Foreground="#AAB2C0"/>
 
@@ -77,8 +101,10 @@
               <TextBlock Text="预设 / Preset" VerticalAlignment="Center" FontWeight="SemiBold"/>
               <ComboBox x:Name="PresetBox" Width="180" Height="42"
                         SelectionChanged="OnPresetChanged"/>
-              <CheckBox x:Name="ExperimentalBox" Content="实验性资源 / Experimental assets"
-                        VerticalAlignment="Center"/>
+              <TextBlock Text="风险档 / Risk tier" VerticalAlignment="Center" FontWeight="SemiBold"/>
+              <ComboBox x:Name="TierBox" Width="320" Height="42"
+                        SelectionChanged="OnTierChanged"
+                        ToolTip.Tip="置空策略的风险上限 / Ceiling for the zero-byte blanking strategies"/>
             </StackPanel>
 
             <StackPanel Orientation="Horizontal" Spacing="8">

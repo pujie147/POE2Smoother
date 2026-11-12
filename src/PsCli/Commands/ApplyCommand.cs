@@ -1,4 +1,5 @@
 using PsCore;
+using PsRules;
 
 namespace PsCli.Commands;
 
@@ -18,9 +19,11 @@ internal static class ApplyCommand
         {
             var preview = service.BuildPlan(request);
             Console.WriteLine($"Would apply {preview.Changes.Count} files ({ArchiveUtil.FormatBytes(preview.TotalBytes)})");
-            Console.WriteLine($"preset: {request.Preset}, pack: {pack.Name}");
+            Console.WriteLine($"preset: {request.Preset}, pack: {pack.Name}, " +
+                              $"tier: {RiskTiers.ToKey(request.MaxTier)}");
             Console.WriteLine($"ignored: {preview.Ignored.Count}, missing: {preview.Missing.Count}");
-            Console.WriteLine($"unchanged: {preview.Unchanged.Count}, skippedExperimental: {preview.SkippedExperimental.Count}");
+            Console.WriteLine($"unchanged: {preview.Unchanged.Count}, skippedExperimental: {preview.SkippedExperimental.Count}" +
+                              $" (fx {preview.SkippedFxCount}, material {preview.SkippedMaterialCount})");
             Console.WriteLine();
             Console.WriteLine("Re-run with --yes to apply.");
             return 0;

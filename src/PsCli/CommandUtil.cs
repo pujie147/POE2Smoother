@@ -70,12 +70,49 @@ internal static class CommandUtil
         return ignore;
     }
 
-    public static (string Preset, IgnoreList Ignore, bool IncludeExperimental, IReadOnlySet<string>? Categories)
+    /// <summary>
+    /// Reads the risk ceiling. `--include-experimental` is kept as the legacy alias for the
+    /// material tier because that is exactly what the old boolean meant (it gated .mat too).
+    /// `--experimental` is more specific and wins when both are present.
+    /// </summary>
+    public static RiskTier ResolveTier(ParsedArgs args)
+    {
+        var tier = args.HasFlag("include-experimental") ? RiskTier.Material : RiskTier.Safe;
+
+        var requested = args.Get("experimental");
+        if (string.IsNullOrWhiteSpace(requested))
+            return tier;
+
+        if (!RiskTiers.TryParse(requested, out var parsed))
+            throw new ArgumentException(
+                $"unknown --experimental value '{requested}' (safe, off, fx or material)");
+
+        return parsed;
+    }
+
+    /// <summary>
+    /// Set semantics, not a ceiling: `--undo-tiers material` undoes materials and nothing else,
+    /// while apply's `--experimental material` means "materials and everything below".
+    /// </summary>
+    public static HashSet<RiskTier>? ResolveUndoTiers(ParsedArgs args)
+    {
+        var raw = args.Get("undo-tiers");
+        if (string.IsNullOrWhiteSpace(raw))
+            return null;
+
+        if (!RiskTiers.TryParseTierList(raw, out var tiers))
+            throw new ArgumentException(
+                $"unknown --undo-tiers value in '{raw}' (expected a list of safe, fx, material)");
+
+        return tiers;
+    }
+
+    public static (string Preset, IgnoreList Ignore, RiskTier MaxTier, IReadOnlySet<string>? Categories)
         ResolveSelection(ParsedArgs args, AppPaths paths)
     {
         var preset = args.Get("preset") ?? "safe";
         var ignore = LoadIgnore(args, paths);
-        var includeExperimental = args.HasFlag("include-experimental");
+        var maxTier = ResolveTier(args);
         IReadOnlySet<string>? categories = null;
 
         var profileName = args.Get("profile");
@@ -85,7 +122,7 @@ internal static class CommandUtil
                           ?? throw new InvalidOperationException($"Profile not found: {profileName}");
             preset = profile.Preset;
             ignore = IgnoreList.FromLines(profile.Ignore);
-            includeExperimental = profile.IncludeExperimental;
+            maxTier = profile.EffectiveTier();
             if (profile.Categories.Count > 0)
                 categories = new HashSet<string>(profile.Categories, StringComparer.OrdinalIgnoreCase);
         }
@@ -98,13 +135,13 @@ internal static class CommandUtil
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
         }
 
-        return (preset, ignore, includeExperimental, categories);
+        return (preset, ignore, maxTier, categories);
     }
 
     public static ApplyRequest BuildApplyRequest(ParsedArgs args, AppPaths paths, GameLocation game,
         RulePack pack, string packPath)
     {
-        var (preset, ignore, includeExperimental, categories) = ResolveSelection(args, paths);
+        var (preset, ignore, maxTier, categories) = ResolveSelection(args, paths);
         return new ApplyRequest
         {
             Game = game,
@@ -112,7 +149,7 @@ internal static class CommandUtil
             RulePackPath = packPath,
             Preset = preset,
             Ignore = ignore,
-            IncludeExperimental = includeExperimental,
+            MaxTier = maxTier,
             Force = args.HasFlag("force"),
             DryRun = args.HasFlag("dry-run"),
             CategoryFilter = categories

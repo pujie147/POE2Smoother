@@ -103,5 +103,67 @@ echo "$RESTORE" | grep -q "index restored" || { echo "$RESTORE"; exit 1; }
 [ "$(exp_size)" = "$EXPECTED" ] || { echo "restore did not give $EXP_PATH back"; exit 1; }
 dotnet "$CLI" status --index "$EXP_INDEX" | grep -q "modified      : False" || { echo "restore must return to original"; exit 1; }
 
+# Risk tiers on the CLI: the value option must parse, must validate, and --include-experimental
+# must still reach the top tier — scripts written against the old boolean cannot silently narrow.
+echo "== CLI end-to-end: risk tiers =="
+TIERS="$TMP/tiers"
+TIERS_BUNDLES="$TIERS/Bundles2"
+TIERS_INDEX="$TIERS_BUNDLES/_.index.bin"
+TIERS_PACK="$TIERS/pack.json"
+TIERS_PET="metadata/effects/spells/fire/spark.pet"
+
+dotnet "$CLI" fixture --out "$TIERS_BUNDLES" --path "$TIERS_PET" --content "PARTICLE-BYTES" >/dev/null
+dotnet "$CLI" build-rules --index "$TIERS_INDEX" --out "$TIERS_PACK" --name "Tier Test" --build synthetic >/dev/null
+
+tiers_size() {
+  dotnet "$CLI" read-file --index "$TIERS_INDEX" --path "$1" | grep "^size" | tr -dc '0-9'
+}
+
+fail() { echo "$1"; shift; printf '%s\n' "$@"; exit 1; }
+
+# safe (and its "off" alias) never blanks.
+dotnet "$CLI" apply --index "$TIERS_INDEX" --pack "$TIERS_PACK" --preset safe --experimental off --yes >/dev/null
+if [ "$(tiers_size "$TIERS_PET")" = "0" ]; then fail "--experimental off blanked $TIERS_PET"; fi
+
+# fx blanks the particle file.
+APPLY=$(dotnet "$CLI" apply --index "$TIERS_INDEX" --pack "$TIERS_PACK" --preset safe --experimental fx --yes)
+if ! grep -q "files      : 1" <<<"$APPLY"; then fail "--experimental fx should blank the particle rule" "$APPLY"; fi
+if [ "$(tiers_size "$TIERS_PET")" != "0" ]; then fail "--experimental fx did not blank $TIERS_PET"; fi
+
+# a bogus tier is an error, not a silent downgrade to safe.
+if dotnet "$CLI" plan --index "$TIERS_INDEX" --pack "$TIERS_PACK" --experimental everything >/dev/null 2>&1; then
+  fail "--experimental accepted a bogus tier"
+fi
+
+# the legacy flag still means "as far as it ever went: material".
+dotnet "$CLI" restore --index "$TIERS_INDEX" --yes >/dev/null
+APPLY=$(dotnet "$CLI" apply --index "$TIERS_INDEX" --pack "$TIERS_PACK" --preset safe --include-experimental --yes)
+if ! grep -q "files      : 1" <<<"$APPLY"; then fail "--include-experimental stopped meaning material" "$APPLY"; fi
+if [ "$(tiers_size "$TIERS_PET")" != "0" ]; then fail "--include-experimental did not blank $TIERS_PET"; fi
+dotnet "$CLI" restore --index "$TIERS_INDEX" --yes >/dev/null
+
+# Scoped restore. This fixture has a single fx entry, so:
+#  - --undo-tiers material leaves it suppressed (a real subset: per-file, kept=1, file stays blank);
+#  - --undo-tiers fx covers every entry, i.e. the same request as an unscoped restore, which takes
+#    the byte-identical whole-index path. Assert outcomes, not which branch printed them.
+dotnet "$CLI" apply --index "$TIERS_INDEX" --pack "$TIERS_PACK" --preset safe --experimental fx --yes >/dev/null
+UNDO=$(dotnet "$CLI" restore --index "$TIERS_INDEX" --undo-tiers material --yes)
+if ! grep -q "kept=1" <<<"$UNDO"; then fail "--undo-tiers material should keep the fx suppression" "$UNDO"; fi
+if [ "$(tiers_size "$TIERS_PET")" != "0" ]; then fail "--undo-tiers material undid the fx blanking"; fi
+
+UNDO=$(dotnet "$CLI" restore --index "$TIERS_INDEX" --undo-tiers fx --yes)
+if [ "$(tiers_size "$TIERS_PET")" = "0" ]; then fail "--undo-tiers fx did not give $TIERS_PET back" "$UNDO"; fi
+if [ -f "$POE2SMOOTHER_HOME/state.json" ]; then
+  fail "a restore that undoes every entry must clear the state file"
+fi
+
+# Whole-index options cannot honour a subset; combining them has to fail, not silently overwrite.
+if dotnet "$CLI" restore --index "$TIERS_INDEX" --undo-tiers fx --force --yes >/dev/null 2>&1; then
+  fail "--undo-tiers accepted --force"
+fi
+if dotnet "$CLI" restore --index "$TIERS_INDEX" --undo-tiers everything --yes >/dev/null 2>&1; then
+  fail "--undo-tiers accepted a bogus tier"
+fi
+
 echo
 echo "ALL TESTS PASSED"

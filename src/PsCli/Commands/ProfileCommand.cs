@@ -49,14 +49,15 @@ internal static class ProfileCommand
                     .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                     .ToList();
 
-                store.Save(new Profile
+                var profile = new Profile
                 {
                     Name = name,
                     Preset = args.Get("preset") ?? "safe",
                     Categories = categories,
-                    Ignore = ignore.Prefixes.ToList(),
-                    IncludeExperimental = args.HasFlag("include-experimental")
-                });
+                    Ignore = ignore.Prefixes.ToList()
+                };
+                profile.SetTier(CommandUtil.ResolveTier(args));
+                store.Save(profile);
                 Console.WriteLine($"saved profile: {name}");
                 return 0;
             }

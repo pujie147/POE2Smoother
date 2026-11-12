@@ -26,6 +26,7 @@ internal static class PlanCommand
                 strategy = c.Strategy.ToString(),
                 c.Size,
                 category = c.CategoryId,
+                tier = c.Tier.ToString().ToLowerInvariant(),
                 c.Experimental
             }),
             ignored = plan.Ignored,
@@ -51,6 +52,7 @@ internal static class PlanCommand
 
         Console.WriteLine($"game       : {game.TargetPath}");
         Console.WriteLine($"pack       : {pack.Name}");
+        Console.WriteLine($"tier       : {RiskTiers.ToKey(request.MaxTier)}");
         Console.WriteLine($"preset     : {request.Preset}");
         Console.WriteLine($"files      : {plan.Changes.Count}");
         Console.WriteLine($"bytes      : {ArchiveUtil.FormatBytes(plan.TotalBytes)}");
@@ -58,7 +60,8 @@ internal static class PlanCommand
         Console.WriteLine($"missing    : {plan.Missing.Count}");
         Console.WriteLine($"unsupported: {plan.Unsupported.Count}");
         Console.WriteLine($"unchanged  : {plan.Unchanged.Count}");
-        Console.WriteLine($"skippedExp : {plan.SkippedExperimental.Count}");
+        Console.WriteLine($"skippedExp : {plan.SkippedExperimental.Count}" +
+                          $" (fx {plan.SkippedFxCount}, material {plan.SkippedMaterialCount})");
         Console.WriteLine();
 
         foreach (var change in plan.Changes.Take(30))

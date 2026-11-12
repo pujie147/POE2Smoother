@@ -16,12 +16,130 @@ public enum StrategyKind
     NullEffectPack
 }
 
+/// <summary>
+/// How much the tool is willing to touch for one rule. The old single "experimental" tick
+/// bundled every blanking strategy together, including <see cref="StrategyKind.NullMaterial"/>,
+/// which zeroes the materials ordinary rendering shares. Splitting them lets a user take the
+/// effect-only win without that, and lets a partial restore undo one without the other.
+/// </summary>
+public enum RiskTier
+{
+    /// <summary>Script surgery on `.ao`, or a valid 1x1 transparent stub for `.dds`. Always applied.</summary>
+    Safe,
+
+    /// <summary>Blank an effect resource (`.pet`/`.epk`/`.fxgraph`/`.aoc`) to zero bytes.</summary>
+    Fx,
+
+    /// <summary>Blank a material (`.mat`). Referenced by rendering outside the effect pack, so it is gated hardest.</summary>
+    Material
+}
+
+public static class RiskTiers
+{
+    /// <summary>
+    /// Tier implied by the replacement itself. `Auto` resolves through the extension table because
+    /// <see cref="ReplacementFactory"/> only resolves it at write time; an extension that has no
+    /// strategy is not gated at all — BuildPlan buckets it as unsupported before anything is written.
+    /// </summary>
+    public static RiskTier Of(StrategyKind strategy, string path)
+    {
+        var resolved = strategy;
+        if (resolved == StrategyKind.Auto &&
+            !RulePackBuilder.TryGetStrategy(path, out resolved))
+            return RiskTier.Safe;
+
+        return resolved switch
+        {
+            StrategyKind.NullMaterial => RiskTier.Material,
+            StrategyKind.NullPet or StrategyKind.NullEffectPack or StrategyKind.NullGraph
+                or StrategyKind.Empty => RiskTier.Fx,
+            _ => RiskTier.Safe
+        };
+    }
+
+    /// <summary>
+    /// A hand-written pack can mark any rule experimental; honour that as a floor so upgrading
+    /// never starts writing files the previous build would have skipped.
+    /// </summary>
+    public static RiskTier OfRule(Rule rule) =>
+        (RiskTier)Math.Max((int)Of(rule.Strategy, rule.Path),
+                           (int)(rule.Experimental ? RiskTier.Fx : RiskTier.Safe));
+
+    public static string ToKey(RiskTier tier) => tier switch
+    {
+        RiskTier.Material => "material",
+        RiskTier.Fx => "fx",
+        _ => "safe"
+    };
+
+    /// <summary>
+    /// Tier of a record already written to state.json. Strategy names there are stored with
+    /// <c>ToString()</c> (PascalCase), not the kebab-case the pack JSON uses, and a hand-written
+    /// <c>Auto</c> rule never got resolved before it was persisted — so the path is needed too.
+    /// Returns null for anything unrecognised: an unknown tier must never be swept up by a
+    /// restore filter, because "keep it suppressed" is the recoverable choice and "undo it" is not.
+    /// </summary>
+    public static RiskTier? TierOfEntry(string? tierName, string? strategyName, string path)
+    {
+        if (ParseTierName(tierName) is { } stored)
+            return stored;
+
+        if (Enum.TryParse<StrategyKind>(strategyName, ignoreCase: true, out var parsed) &&
+            parsed != StrategyKind.Auto)
+            return Of(parsed, path);
+
+        // No tier column (state written before tiers existed) plus "Auto" or junk in the strategy
+        // column: fall back to what the extension implies.
+        return RulePackBuilder.TryGetStrategy(path, out var byExtension)
+            ? Of(byExtension, path)
+            : null;
+    }
+
+    public static RiskTier? ParseTierName(string? value) =>
+        Enum.TryParse<RiskTier>(value, ignoreCase: true, out var parsed) ? parsed : null;
+
+    /// <summary>
+    /// Tiers named by a CLI list (`--undo-tiers safe,fx`). Unlike the apply ceiling this is a plain
+    /// set — "undo material" must not also undo fx. Unknown names are rejected by the caller.
+    /// </summary>
+    public static bool TryParseTierList(string? value, out HashSet<RiskTier> tiers)
+    {
+        tiers = [];
+        foreach (var token in (value ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (!TryParse(token, out var tier))
+                return false;
+
+            tiers.Add(tier);
+        }
+
+        return tiers.Count > 0;
+    }
+
+    /// <summary>Parses the settings/profile/CLI vocabulary. `off` is the same as `safe`.</summary>
+    public static bool TryParse(string? value, out RiskTier tier)
+    {
+        tier = value?.Trim().ToLowerInvariant() switch
+        {
+            "material" => RiskTier.Material,
+            "fx" => RiskTier.Fx,
+            "safe" or "off" or "" => RiskTier.Safe,
+            _ => (RiskTier)(-1)
+        };
+        return tier is RiskTier.Safe or RiskTier.Fx or RiskTier.Material;
+    }
+}
+
 public sealed class Rule
 {
     public string Path { get; set; } = "";
     public StrategyKind Strategy { get; set; } = StrategyKind.Auto;
     public bool Experimental { get; set; }
     public string? Note { get; set; }
+
+    /// <summary>Derived, never serialized: the pack schema stays at version 1 so old packs still load.</summary>
+    [JsonIgnore]
+    public RiskTier Tier => RiskTiers.OfRule(this);
 }
 
 public sealed class RuleCategory
@@ -63,13 +181,18 @@ public sealed class RulePack
         return Categories.Where(c => patterns.Any(p => PresetSelector.Matches(c.Id, p)));
     }
 
-    public IEnumerable<Rule> SelectedRules(string preset, bool includeExperimental)
+    /// <summary>
+    /// Same ceiling rule as <c>AppService.BuildPlan</c>: a rule is selected when its tier does not
+    /// exceed <paramref name="maxTier"/>. Kept in sync deliberately so a preview built here can never
+    /// disagree with the plan that actually gets written.
+    /// </summary>
+    public IEnumerable<Rule> SelectedRules(string preset, RiskTier maxTier)
     {
         foreach (var category in SelectedCategories(preset))
         {
             foreach (var rule in category.Rules)
             {
-                if (rule.Experimental && !includeExperimental)
+                if (rule.Tier > maxTier)
                     continue;
                 yield return rule;
             }

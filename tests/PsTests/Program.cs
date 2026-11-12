@@ -84,6 +84,33 @@ Check("replace: BOM-less UTF-16 treated as binary and left untouched",
     ReplacementFactory.Create(u16NoBom, "metadata/effects/spells/fire/nib.ao", StrategyKind.StripAttachments)
         .SequenceEqual(u16NoBom));
 
+// Shapes taken from production .ao bodies: double-quoted epk calls, a <lock> second argument,
+// and an assignment whose right-hand side is the call. The old single-quote/<root>-only pattern
+// matched none of them, and where it did match it left `this.attached = parent_ao.` behind.
+var prodAo =
+    "\t\t\tthis.attached = parent_ao.AddAttached( 'Metadata/Items/A/shield_Held.ao', <lock>);\r\n" +
+    "\t\t\tparent_ao.RemoveAttached( this.attached );\r\n" +
+    "\t\t\tparent_ao.RemoveEffectPack( \"Metadata/Effects/Mtx/corrupted_body.epk\" );\r\n" +
+    "\t\t\tIfState( body, 1, { parent_ao.AddEffectPack( \"Metadata/Effects/Mtx/corrupted_body.epk\" ); } );\r\n" +
+    "\t\t\tCall( update_size );\r\n";
+var prodBytes = ReplacementFactory.Create(U16(prodAo), "metadata/effects/mtx/x.ao",
+    StrategyKind.StripAttachments);
+var prodStripped = Encoding.Unicode.GetString(prodBytes, 2, prodBytes.Length - 2);
+Check("replace: double-quoted epk calls are stripped",
+    !prodStripped.Contains("RemoveEffectPack") && !prodStripped.Contains("AddEffectPack"), prodStripped);
+Check("replace: <lock> second argument is stripped",
+    !prodStripped.Contains("AddAttached"), prodStripped);
+Check("replace: assignment keeps a valid right-hand side",
+    prodStripped.Contains("this.attached = nil;"), prodStripped);
+Check("replace: no dangling receiver is left behind",
+    !System.Text.RegularExpressions.Regex.IsMatch(prodStripped, @"parent_ao\.\s*[;\r\n]"),
+    prodStripped);
+Check("replace: paired RemoveAttached is untouched",
+    prodStripped.Contains("parent_ao.RemoveAttached( this.attached );"), prodStripped);
+Check("replace: unrelated calls and block syntax survive",
+    prodStripped.Contains("Call( update_size );") && prodStripped.Contains("IfState( body, 1, {  } );"),
+    prodStripped);
+
 // ---------------------------------------------------------------------------
 // RulePackBuilder
 // ---------------------------------------------------------------------------
@@ -161,7 +188,6 @@ Check("path: from game root -> index", Path.GetFullPath(fromRoot.IndexPath) == P
         RulePackPath = Path.Combine(root, "pack.json"),
         Preset = "safe",
         Ignore = IgnoreList.Default(),
-        IncludeExperimental = false,
         Force = true
     };
 
@@ -730,7 +756,7 @@ Check("path: from game root -> index", Path.GetFullPath(fromRoot.IndexPath) == P
         Pack = packE,
         Preset = "safe",
         Ignore = IgnoreList.Default(),
-        IncludeExperimental = includeExperimental,
+        MaxTier = includeExperimental ? RiskTier.Material : RiskTier.Safe,
         Force = true
     };
 
@@ -835,6 +861,343 @@ Check("path: from game root -> index", Path.GetFullPath(fromRoot.IndexPath) == P
 }
 
 // ---------------------------------------------------------------------------
+// Risk tiers: what the single "experimental" boolean used to bundle together is now three gates
+// ---------------------------------------------------------------------------
+Check("tier: script surgery and transparent dds are safe",
+    RiskTiers.Of(StrategyKind.StripAttachments, "a/b.ao") == RiskTier.Safe &&
+    RiskTiers.Of(StrategyKind.TransparentDds, "a/b.dds") == RiskTier.Safe);
+Check("tier: blanking an effect resource is fx",
+    RiskTiers.Of(StrategyKind.NullPet, "a/b.pet") == RiskTier.Fx &&
+    RiskTiers.Of(StrategyKind.NullEffectPack, "a/b.epk") == RiskTier.Fx &&
+    RiskTiers.Of(StrategyKind.NullGraph, "a/b.fxgraph") == RiskTier.Fx &&
+    RiskTiers.Of(StrategyKind.Empty, "a/b.aoc") == RiskTier.Fx);
+Check("tier: blanking a material is its own tier",
+    RiskTiers.Of(StrategyKind.NullMaterial, "a/b.mat") == RiskTier.Material);
+Check("tier: keep is never gated", RiskTiers.Of(StrategyKind.Keep, "a/b.mat") == RiskTier.Safe);
+Check("tier: Auto resolves through the extension",
+    RiskTiers.Of(StrategyKind.Auto, "metadata/effects/spells/a/b.mat") == RiskTier.Material &&
+    RiskTiers.Of(StrategyKind.Auto, "metadata/effects/spells/a/b.pet") == RiskTier.Fx &&
+    RiskTiers.Of(StrategyKind.Auto, "metadata/effects/spells/a/b.ao") == RiskTier.Safe);
+Check("tier: Auto on an unsupported extension is not gated",
+    RiskTiers.Of(StrategyKind.Auto, "metadata/effects/spells/a/b.ot") == RiskTier.Safe);
+Check("tier: off and safe are the same key, junk is rejected",
+    RiskTiers.TryParse("off", out var offTier) && offTier == RiskTier.Safe &&
+    RiskTiers.TryParse("", out var emptyTier) && emptyTier == RiskTier.Safe &&
+    RiskTiers.TryParse("everything", out _) == false);
+Check("tier: key round trip",
+    RiskTiers.TryParse(RiskTiers.ToKey(RiskTier.Material), out var back) && back == RiskTier.Material);
+
+// A hand-written pack may mark anything experimental, or mark nothing; the flag is a floor, never
+// a ceiling, so upgrading cannot start writing files the old build skipped.
+Check("tier: an experimental .ao rule stays gated instead of becoming safe",
+    new Rule { Path = "metadata/effects/spells/a/b.ao", Strategy = StrategyKind.StripAttachments, Experimental = true }
+        .Tier == RiskTier.Fx);
+Check("tier: a material rule the old pack forgot to mark is still material",
+    new Rule { Path = "metadata/effects/spells/a/b.mat", Strategy = StrategyKind.NullMaterial, Experimental = false }
+        .Tier == RiskTier.Material);
+
+// Legacy settings/profile files only carry the boolean, which used to mean "every blanking
+// strategy including .mat" — migrating it to fx would quietly stop suppressing materials.
+Check("tier: legacy settings migrate to material",
+    new AppSettings { IncludeExperimental = true }.EffectiveTier() == RiskTier.Material &&
+    new AppSettings().EffectiveTier() == RiskTier.Safe &&
+    new Profile { IncludeExperimental = true }.EffectiveTier() == RiskTier.Material);
+{
+    var migrated = new AppSettings { IncludeExperimental = true };
+    migrated.SetTier(RiskTier.Fx);
+    Check("tier: setting a tier keeps both the string and the mirrored legacy boolean",
+        migrated.ExperimentalTier == "fx" && migrated.IncludeExperimental &&
+        migrated.EffectiveTier() == RiskTier.Fx);
+    migrated.SetTier(RiskTier.Safe);
+    Check("tier: going back to safe clears the mirrored boolean too",
+        migrated.ExperimentalTier == "safe" && !migrated.IncludeExperimental);
+}
+
+{
+    // One fixture, three tiers: the same selection must grow the change set in two distinct steps.
+    var root = TestIndexBuilder.NewRoot("risk-tiers");
+    var bundles = Path.Combine(root, "Bundles2");
+    const string aoPath = "metadata/effects/spells/fire/fireball.ao";
+    const string petPath = "metadata/effects/spells/fire/burn.pet";
+    const string matPath = "metadata/effects/spells/fire/shield.mat";
+    var originalAo = "version 1\nAddAttached( 'metadata/effects/spells/fire/burn.pet', <root> );\nKeepThis();\n";
+    var petBytes = new byte[] { 10, 20, 30, 40, 50 };
+    var matBytes = new byte[] { 7, 7, 7, 7 };
+    var indexPath = TestIndexBuilder.Build(bundles, new (string, byte[])[]
+    {
+        (aoPath, Encoding.UTF8.GetBytes(originalAo)),
+        (petPath, petBytes),
+        (matPath, matBytes)
+    });
+    var game = SteamLibraryLocator.FromIndex(indexPath);
+    var appPaths = new AppPaths(Path.Combine(root, "home"));
+    appPaths.Ensure();
+    var service = new AppService(appPaths);
+    var (packT, _) = service.BuildRules(game, "Risk Tiers", "test");
+
+    ApplyRequest At(RiskTier tier) => new()
+    {
+        Game = game, Pack = packT, Preset = "safe",
+        Ignore = IgnoreList.Default(), MaxTier = tier, Force = true
+    };
+
+    var safePlan = service.BuildPlan(At(RiskTier.Safe));
+    Check("tier plan: safe only writes the script",
+        safePlan.Changes.Count == 1 && safePlan.Changes[0].Path == aoPath,
+        $"count={safePlan.Changes.Count}");
+    Check("tier plan: the skip bucket splits by tier",
+        safePlan.SkippedExperimental.Count == 2 &&
+        safePlan.SkippedFxCount == 1 && safePlan.SkippedMaterialCount == 1,
+        $"fx={safePlan.SkippedFxCount} material={safePlan.SkippedMaterialCount}");
+
+    var fxPlan = service.BuildPlan(At(RiskTier.Fx));
+    Check("tier plan: fx adds the particle file and nothing else",
+        fxPlan.Changes.Count == 2 && fxPlan.Changes.Any(c => c.Path == petPath) &&
+        fxPlan.SkippedExperimental.Count == 1 && fxPlan.SkippedMaterialCount == 1);
+    Check("tier plan: material totals are what the confirmation dialog reports",
+        fxPlan.MaterialFiles == 0 && fxPlan.MaterialBytes == 0 &&
+        service.BuildPlan(At(RiskTier.Material)).MaterialFiles == 1);
+
+    // Apply at fx: the material must not merely stay out of the change list, its bytes have to be
+    // untouched — that is the entire point of splitting the old checkbox.
+    service.Apply(At(RiskTier.Fx));
+    using (var read = IndexSession.OpenReadOnly(game))
+    {
+        read.TryGetFile(petPath, out var petRecord);
+        read.TryGetFile(matPath, out var matRecord);
+        Check("tier apply: fx blanks the particle file", petRecord!.Read().ToArray().Length == 0);
+        Check("tier apply: fx leaves the material bytes alone",
+            matRecord!.Read().ToArray().SequenceEqual(matBytes));
+    }
+    Check("tier apply: the state tracks no material entries",
+        StateStore.Load(appPaths) is { } stT &&
+        stT.PatchedFiles.All(e => e.Strategy != nameof(StrategyKind.NullMaterial)),
+        $"entries={string.Join(",", StateStore.Load(appPaths)?.PatchedFiles.Select(e => e.Strategy) ?? [])}");
+
+    // Applying one tier higher resets to the baseline first, so raising the tier adds files rather
+    // than reporting "0 changes" — the case that made the old UI look broken.
+    var raised = service.Apply(At(RiskTier.Material));
+    Check("tier apply: raising the tier adds the material instead of doing nothing",
+        raised.Plan.Changes.Count == 3, $"count={raised.Plan.Changes.Count}");
+    using (var read = IndexSession.OpenReadOnly(game))
+    {
+        read.TryGetFile(matPath, out var matRecord);
+        Check("tier apply: material blanks the material", matRecord!.Read().ToArray().Length == 0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Scoped restore: undo one tier, keep the rest suppressed (F)
+// ---------------------------------------------------------------------------
+{
+    var root = TestIndexBuilder.NewRoot("scoped-restore");
+    var bundles = Path.Combine(root, "Bundles2");
+    const string aoPath = "metadata/effects/spells/fire/fireball.ao";
+    const string petPath = "metadata/effects/spells/fire/burn.pet";
+    const string matPath = "metadata/effects/spells/fire/shield.mat";
+    var originalAo = "version 1\nAddAttached( 'metadata/effects/spells/fire/burn.pet', <root> );\nKeepThis();\n";
+    var petBytes = new byte[] { 10, 20, 30, 40, 50 };
+    var matBytes = new byte[] { 7, 7, 7, 7 };
+    var indexPath = TestIndexBuilder.Build(bundles, new (string, byte[])[]
+    {
+        (aoPath, Encoding.UTF8.GetBytes(originalAo)),
+        (petPath, petBytes),
+        (matPath, matBytes)
+    });
+    var originalHash = HashUtil.Sha256File(indexPath);
+    var game = SteamLibraryLocator.FromIndex(indexPath);
+    var appPaths = new AppPaths(Path.Combine(root, "home"));
+    appPaths.Ensure();
+    var service = new AppService(appPaths);
+    var (packS, _) = service.BuildRules(game, "Scoped Restore", "test");
+
+    ApplyRequest At(RiskTier tier) => new()
+    {
+        Game = game, Pack = packS, Preset = "safe",
+        Ignore = IgnoreList.Default(), MaxTier = tier, Force = true
+    };
+    RestoreRequest ScopedRestore(params RiskTier[] tiers) => new()
+    {
+        Game = game, UndoTiers = tiers.ToHashSet()
+    };
+
+    static byte[] Bytes(IndexSession session, string path)
+    {
+        session.TryGetFile(path, out var record);
+        return record!.Read().ToArray();
+    }
+
+    static bool Throws(Action action)
+    {
+        try { action(); return false; }
+        catch { return true; }
+    }
+
+    // A filter naming every tier is the same request as no filter at all, and must keep the
+    // whole-index path with its byte-identical result rather than silently downgrading to per-file.
+    service.Apply(At(RiskTier.Material));
+    Check("undo scope: every tier still takes the whole-index restore",
+        service.Restore(ScopedRestore(RiskTier.Safe, RiskTier.Fx, RiskTier.Material)) is
+            { RestoredIndex: true, PerFile: false } && HashUtil.Sha256File(indexPath) == originalHash);
+
+    // A filter that leaves something behind must go per-file even though nothing drifted.
+    service.Apply(At(RiskTier.Material));
+    var scoped = service.Restore(ScopedRestore(RiskTier.Material));
+    Check("undo scope: a partial filter forces the per-file branch",
+        scoped is { PerFile: true, Scoped: true, FilesRestored: 1 },
+        $"perFile={scoped.PerFile} scoped={scoped.Scoped} restored={scoped.FilesRestored}");
+    Check("undo scope: only the material was undone",
+        scoped.FilesRestored == 1 && scoped.FilesKept == 2,
+        $"restored={scoped.FilesRestored} kept={scoped.FilesKept}");
+    var statusScoped = service.GetStatus(game);
+    Check("undo scope: a partial restore still reads as applied, not as a game update",
+        statusScoped is { IsModified: true, GameUpdated: false } && statusScoped.BackupExists,
+        $"modified={statusScoped.IsModified} updated={statusScoped.GameUpdated}");
+    using (var read = IndexSession.OpenReadOnly(game))
+    {
+        Check("undo scope: material bytes back", Bytes(read, matPath).SequenceEqual(matBytes));
+        Check("undo scope: particle still blanked", Bytes(read, petPath).Length == 0);
+        Check("undo scope: script still stripped",
+            !Encoding.UTF8.GetString(Bytes(read, aoPath)).Contains("AddAttached"));
+    }
+
+    // The kept entries have to stay tracked, or the next restore/re-apply cannot see them.
+    var keptState = StateStore.Load(appPaths)!;
+    Check("undo scope: state keeps exactly the two remaining files",
+        keptState.PatchedFiles.Count == 2 && keptState.FileCount == 2,
+        $"count={keptState.PatchedFiles.Count} fileCount={keptState.FileCount}");
+    Check("undo scope: the kept entries carry their tiers",
+        keptState.PatchedFiles.All(e => e.Tier.Length > 0) &&
+        keptState.PatchedFiles.Count(e => e.Tier == nameof(RiskTier.Fx)) == 1,
+        string.Join(",", keptState.PatchedFiles.Select(e => e.Tier)));
+    Check("undo scope: the partial baseline is recorded",
+        keptState.PartialRestoreIndexSha256.Length == 64 &&
+        keptState.PartialRestoreIndexSha256 == HashUtil.Sha256File(indexPath));
+    Check("undo scope: a custom bundle still in use is not swept",
+        BackupManager.HasCustomBundles(bundles));
+
+    // Without this baseline the next apply would read the index as "game updated" and --force
+    // would then delete the bundles the two kept suppressions still point into.
+    var reapply = service.Apply(new ApplyRequest
+    {
+        Game = game, Pack = packS, Preset = "safe",
+        Ignore = IgnoreList.Default(), MaxTier = RiskTier.Fx
+    });
+    Check("undo scope: re-applying after a partial restore rolls back to the baseline",
+        reapply.Plan.Changes.Count == 2 && StateStore.Load(appPaths) is { PatchedFiles.Count: 2 },
+        $"changes={reapply.Plan.Changes.Count}");
+    using (var read = IndexSession.OpenReadOnly(game))
+    {
+        Check("undo scope: the re-applied run left the material alone",
+            Bytes(read, matPath).SequenceEqual(matBytes));
+    }
+
+    // Whole-index options cannot honour a subset; combining them must fail loudly.
+    Check("undo scope: --undo-tiers with --backup is rejected",
+        Throws(() => service.Restore(new RestoreRequest
+            { Game = game, UndoTiers = ScopedRestore(RiskTier.Material).UndoTiers, BackupPath = keptState.BackupPath })));
+    Check("undo scope: --undo-tiers with --clean-only is rejected",
+        Throws(() => service.Restore(new RestoreRequest
+            { Game = game, UndoTiers = ScopedRestore(RiskTier.Material).UndoTiers, CleanOnly = true })));
+    Check("undo scope: --undo-tiers with --force is rejected",
+        Throws(() => service.Restore(new RestoreRequest
+            { Game = game, UndoTiers = ScopedRestore(RiskTier.Material).UndoTiers, Force = true })));
+
+    // A state file written before tiers existed has no Tier column; the strategy column has to
+    // carry the same classification or the filter would silently keep every material suppressed.
+    var legacy = StateStore.Load(appPaths)!;
+    foreach (var entry in legacy.PatchedFiles) entry.Tier = "";
+    StateStore.Save(appPaths, legacy);
+    var legacyScoped = service.Restore(ScopedRestore(RiskTier.Fx));
+    Check("undo scope: a legacy state file is classified from its strategy",
+        legacyScoped.FilesRestored == 1 && legacyScoped.FilesKept == 1,
+        $"restored={legacyScoped.FilesRestored} kept={legacyScoped.FilesKept}");
+
+    service.Restore(new RestoreRequest { Game = game });
+    Check("undo scope: an unscoped restore finishes the job",
+        StateStore.Load(appPaths) == null && HashUtil.Sha256File(indexPath) == originalHash);
+}
+
+// ---------------------------------------------------------------------------
+// Post-apply verification (H1) and "already blank" previews (H3)
+// ---------------------------------------------------------------------------
+{
+    var root = TestIndexBuilder.NewRoot("verify-applied");
+    var bundles = Path.Combine(root, "Bundles2");
+    const string aoPath = "metadata/effects/spells/fire/fireball.ao";
+    const string matPath = "metadata/effects/spells/fire/shield.mat";
+    var originalAo = "version 1\nAddAttached( 'x.pet', <root> );\nKeepThis();\n";
+    var indexPath = TestIndexBuilder.Build(bundles, new (string, byte[])[]
+    {
+        (aoPath, Encoding.UTF8.GetBytes(originalAo)),
+        (matPath, new byte[] { 7, 7, 7, 7 })
+    });
+    var game = SteamLibraryLocator.FromIndex(indexPath);
+    var appPaths = new AppPaths(Path.Combine(root, "home"));
+    appPaths.Ensure();
+    var service = new AppService(appPaths);
+    var (packV, _) = service.BuildRules(game, "Verify", "test");
+
+    service.Apply(new ApplyRequest
+    {
+        Game = game, Pack = packV, Preset = "safe",
+        Ignore = IgnoreList.Default(), MaxTier = RiskTier.Material, Force = true
+    });
+    var written = StateStore.Load(appPaths)!.PatchedFiles;
+
+    // The check that runs inside every apply must also pass when called again from the outside.
+    var threw = false;
+    try { service.VerifyApplied(written, game); } catch (Exception ex) { threw = true; Console.Error.WriteLine(ex.Message); }
+    Check("verify: the committed index matches what apply recorded", !threw);
+
+    // PatchedFileEntry is a plain class, so the fault is injected on a freshly deserialized copy —
+    // mutating it never touches the state file on disk.
+    bool Fails(Action<List<PatchedFileEntry>> mutate)
+    {
+        try
+        {
+            var tampered = StateStore.Load(appPaths)!;
+            mutate(tampered.PatchedFiles);
+            service.VerifyApplied(tampered.PatchedFiles, game);
+            return false;
+        }
+        catch (InvalidDataException)
+        {
+            return true;
+        }
+    }
+
+    Check("verify: a size that does not match is reported",
+        Fails(files => files[0].AppliedSize = 999));
+    Check("verify: a bundle that does not match is reported",
+        Fails(files => files[0].AppliedBundlePath = "Data/nope.bundle.bin"));
+    Check("verify: a file missing from the committed index is reported",
+        Fails(files => files[0].Path = "metadata/effects/spells/fire/gone.ao"));
+
+    // H3: planning over an already-patched client must not promise to re-write zero bytes over zero.
+    var preview = service.BuildPlan(new ApplyRequest
+    {
+        Game = game, Pack = packV, Preset = "safe",
+        Ignore = IgnoreList.Default(), MaxTier = RiskTier.Material
+    });
+    Check("verify: a preview over the patched client finds nothing left to write",
+        preview.Changes.Count == 0 && preview.Unchanged.Count == 2,
+        $"changes={preview.Changes.Count} unchanged={preview.Unchanged.Count}");
+
+    // …and the same request against the pristine client still writes everything (the baseline
+    // rollback in Apply is what makes that true, so the filter must not hide real work).
+    service.Restore(new RestoreRequest { Game = game });
+    var fresh = service.BuildPlan(new ApplyRequest
+    {
+        Game = game, Pack = packV, Preset = "safe",
+        Ignore = IgnoreList.Default(), MaxTier = RiskTier.Material
+    });
+    Check("verify: the same plan on the original client still counts both files",
+        fresh.Changes.Count == 2 && fresh.Unchanged.Count == 0,
+        $"changes={fresh.Changes.Count}");
+}
+
+// ---------------------------------------------------------------------------
 // AppService: per-file restore of an experimental apply (0-byte records redirect back)
 // ---------------------------------------------------------------------------
 {
@@ -860,7 +1223,7 @@ Check("path: from game root -> index", Path.GetFullPath(fromRoot.IndexPath) == P
     service.Apply(new ApplyRequest
     {
         Game = game, Pack = packP, Preset = "safe", Ignore = IgnoreList.Default(),
-        IncludeExperimental = true, Force = true
+        MaxTier = RiskTier.Material, Force = true
     });
     Check("exp-perfile: three files suppressed", StateStore.Load(appPaths) is { PatchedFiles.Count: 3 });
 
@@ -875,8 +1238,8 @@ Check("path: from game root -> index", Path.GetFullPath(fromRoot.IndexPath) == P
 
     var restore = service.Restore(new RestoreRequest { Game = game });
     // PerFile is what separates a redirect restore from a whole-index backup overwrite;
-    // RestoredIndex is true in both (per-file also rewrites the index records it redirects).
-    Check("exp-perfile: per-file restore chosen", restore.PerFile);
+    // RestoredIndex now means only "the index file itself was replaced from the backup".
+    Check("exp-perfile: per-file restore chosen", restore is { PerFile: true, RestoredIndex: false });
     Check("exp-perfile: files we still own are redirected back", restore.FilesRestored == 2);
     Check("exp-perfile: updated file skipped",
         restore.FilesSkipped == 1 && restore.SkippedPaths.Contains(petPath));
@@ -892,6 +1255,114 @@ Check("path: from game root -> index", Path.GetFullPath(fromRoot.IndexPath) == P
         Check("exp-perfile: updated .pet keeps the new content", p!.Read().ToArray().SequenceEqual(new byte[] { 42, 42 }));
     }
     Check("exp-perfile: state cleared", StateStore.Load(appPaths) == null);
+}
+
+// ---------------------------------------------------------------------------
+// Scoped restore after a game update, and inside Content.ggpk (F)
+// ---------------------------------------------------------------------------
+{
+    var root = TestIndexBuilder.NewRoot("scoped-restore-drift");
+    var bundles = Path.Combine(root, "Bundles2");
+    const string aoPath = "metadata/effects/spells/alpha/fireball.ao";
+    const string petPath = "metadata/effects/spells/alpha/burn.pet";
+    const string matPath = "metadata/effects/spells/alpha/shield.mat";
+    var originalAo = "version 1\nAddAttached( 'metadata/effects/spells/alpha/burn.pet', <root> );\nKeepThis();\n";
+    var pet = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
+    var mat = new byte[] { 9, 8, 7 };
+    var indexPath = TestIndexBuilder.Build(bundles, new[]
+    {
+        (aoPath, Encoding.UTF8.GetBytes(originalAo)), (petPath, pet), (matPath, mat)
+    });
+    var game = SteamLibraryLocator.FromIndex(indexPath);
+    var appPaths = new AppPaths(Path.Combine(root, "home"));
+    var service = new AppService(appPaths);
+    var (packD, _) = service.BuildRules(game, "Scoped Drift", "test");
+
+    service.Apply(new ApplyRequest
+    {
+        Game = game, Pack = packD, Preset = "safe", Ignore = IgnoreList.Default(),
+        MaxTier = RiskTier.Material, Force = true
+    });
+
+    // The update rewrites the blanked .mat with new content; the .ao and .pet stay exactly as we
+    // left them. Undoing the material tier must take back what it still owns and forget the file
+    // the game replaced — never write the old bytes over it.
+    using (var work = IndexSession.OpenWorkCopy(indexPath, bundles))
+    {
+        work.TryGetFile(matPath, out var rec);
+        rec!.Write(new byte[] { 42, 42, 42 });
+        work.Save();
+        work.Commit();
+    }
+
+    var drifted = service.Restore(new RestoreRequest
+    {
+        Game = game, UndoTiers = new HashSet<RiskTier> { RiskTier.Material }
+    });
+    Check("undo drift: scoped restore is still per-file",
+        drifted is { PerFile: true, Scoped: true, FilesRestored: 0, FilesSkipped: 1 });
+    Check("undo drift: the fx tier and the script are left alone",
+        drifted.FilesKept == 2, $"kept={drifted.FilesKept}");
+    using (var read = IndexSession.OpenReadOnly(game))
+    {
+        read.TryGetFile(matPath, out var m);
+        Check("undo drift: the updated material keeps the new bytes",
+            m!.Read().ToArray().SequenceEqual(new byte[] { 42, 42, 42 }));
+        read.TryGetFile(petPath, out var p);
+        Check("undo drift: the particle is still blanked", p!.Read().ToArray().Length == 0);
+    }
+    var driftedState = StateStore.Load(appPaths)!;
+    Check("undo drift: the forgotten file is out of the state, the kept ones are not",
+        driftedState.PatchedFiles.Count == 2 &&
+        driftedState.PatchedFiles.All(e => e.Path != matPath),
+        string.Join(",", driftedState.PatchedFiles.Select(e => e.Path)));
+
+    // The same subset logic has to work inside a container, where there is no atomic rename and
+    // no orphan sweep: the index Save is claimed to drop emptied custom bundles by itself, and no
+    // test had ever checked that.
+    var ggRoot = TestIndexBuilder.NewRoot("scoped-restore-ggpk");
+    var ggBundles = Path.Combine(ggRoot, "Bundles2");
+    TestIndexBuilder.Build(ggBundles, new[]
+    {
+        (aoPath, Encoding.UTF8.GetBytes(originalAo)), (petPath, pet), (matPath, mat)
+    });
+    var ggpkPath = TestGgpkBuilder.Wrap(ggBundles, Path.Combine(ggRoot, "Content.ggpk"));
+    var ggGame = StandaloneLocator.FromGgpk(ggpkPath);
+    var ggStore = TargetStore.For(ggGame);
+    var ggPaths = new AppPaths(Path.Combine(ggRoot, "home"));
+    ggPaths.Ensure();
+    var ggService = new AppService(ggPaths);
+    var (packH, _) = ggService.BuildRules(ggGame, "GGPK Scoped", "test");
+
+    ggService.Apply(new ApplyRequest
+    {
+        Game = ggGame, Pack = packH, Preset = "safe", Ignore = IgnoreList.Default(),
+        MaxTier = RiskTier.Material, Force = true
+    });
+    var ggScoped = ggService.Restore(new RestoreRequest
+    {
+        Game = ggGame, UndoTiers = new HashSet<RiskTier> { RiskTier.Material }
+    });
+    Check("undo ggpk: a scoped restore inside the container goes per-file",
+        ggScoped is { PerFile: true, Scoped: true, FilesRestored: 1, FilesKept: 2 },
+        $"restored={ggScoped.FilesRestored} kept={ggScoped.FilesKept} msg={ggScoped.Message}");
+    using (var read = IndexSession.OpenReadOnly(ggGame))
+    {
+        read.TryGetFile(matPath, out var m);
+        Check("undo ggpk: the material redirected back to its original bytes",
+            m!.Read().ToArray().SequenceEqual(mat));
+        read.TryGetFile(petPath, out var p);
+        Check("undo ggpk: the particle is still blanked inside the container",
+            p!.Read().ToArray().Length == 0);
+    }
+    Check("undo ggpk: the container still carries the kept suppression",
+        ggStore.HasCustomBundles() && ggService.GetStatus(ggGame).IsModified);
+
+    // Finishing the job from here must still be possible: an unscoped restore undoes the rest.
+    ggService.Restore(new RestoreRequest { Game = ggGame });
+    Check("undo ggpk: a later unscoped restore clears what the scoped one kept",
+        StateStore.Load(ggPaths) == null && !ggStore.HasCustomBundles() &&
+        ggService.GetStatus(ggGame).IsModified == false);
 }
 
 // ---------------------------------------------------------------------------
@@ -929,7 +1400,7 @@ Check("path: from game root -> index", Path.GetFullPath(fromRoot.IndexPath) == P
         Pack = packG,
         Preset = "safe",
         Ignore = IgnoreList.Default(),
-        IncludeExperimental = includeExperimental,
+        MaxTier = includeExperimental ? RiskTier.Material : RiskTier.Safe,
         Force = true
     };
 

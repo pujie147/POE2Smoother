@@ -26,6 +26,7 @@ public partial class MainWindow : Window
     private bool _loading;
     private bool _restoreArmed;
     private bool _applyArmed;
+    private bool _materialConfirmed;
 
     public MainWindow()
     {
@@ -37,13 +38,20 @@ public partial class MainWindow : Window
         _settings = SettingsStore.Load(_paths);
         CategoryGroupList.ItemsSource = _groups;
 
-        // 恢复勾选必须排在任何会触发 SaveSettings 的赋值之前:给 ComboBox 赋 SelectedItem 会同步
-        // 触发 SelectionChanged,处理器里的 SaveSettings 读到还没恢复的复选框,就会把用户保存的
-        // “实验性资源”勾选改写成 false——重启后勾选静默丢失,下一次应用悄悄少屏蔽一批文件。
-        ExperimentalBox.IsChecked = _settings.IncludeExperimental;
-
-        // 构造期间不写设置:下面两个下拉框的 SelectionChanged 由 _loading 挡住。
+        // 恢复档位必须排在任何会触发 SaveSettings 的赋值之前,并且整个构造期间由 _loading 挡住
+        // SelectionChanged:给 ComboBox 赋 ItemsSource/SelectedItem 会同步触发处理器,处理器里的
+        // SaveSettings 读到还没恢复的档位,就会把用户保存的选择改写掉——85f908a 修的就是这个形状
+        // (当时是复选框重启后静默丢失,下一次应用悄悄少屏蔽一批文件)。
         _loading = true;
+        // Built from TierItem.For: the tier restored from settings has to compare equal to an item
+        // in this list, so the labels must not be a second hand-written copy of the same text.
+        TierBox.ItemsSource = new[]
+        {
+            TierItem.For(RiskTier.Safe),
+            TierItem.For(RiskTier.Fx),
+            TierItem.For(RiskTier.Material)
+        };
+        TierBox.SelectedItem = TierItem.For(_settings.EffectiveTier());
         GroupFilterBox.ItemsSource = new[]
         {
             new GroupFilterItem("all", "全部 / All"),
@@ -55,6 +63,18 @@ public partial class MainWindow : Window
             new GroupFilterItem("misc", "其他 / Misc")
         };
         GroupFilterBox.SelectedIndex = 0;
+
+        RestoreScopeBox.ItemsSource = new[]
+        {
+            new RestoreScopeItem("全部还原(整档)/ Everything (whole index)", null),
+            new RestoreScopeItem("只撤实验性(特效+材质)/ Experimental only",
+                new HashSet<RiskTier> { RiskTier.Fx, RiskTier.Material }),
+            new RestoreScopeItem("只撤材质 / Materials only",
+                new HashSet<RiskTier> { RiskTier.Material }),
+            new RestoreScopeItem("只撤脚本手术 / Script surgery only",
+                new HashSet<RiskTier> { RiskTier.Safe })
+        };
+        RestoreScopeBox.SelectedIndex = 0;
 
         PresetBox.ItemsSource = new[] { "safe", "clean", "performance", "full" };
         LanguageBox.ItemsSource = new[] { "zh", "en" };
@@ -347,15 +367,38 @@ public partial class MainWindow : Window
             SetStatus($"预设 {preset}:已选 {selectedCount}/{_rows.Count} 类 / {selectedCount}/{_rows.Count} categories selected.");
         }
 
-        if (ExperimentalBox.IsChecked != true && selectedCount > 0)
+        UpdateTierHint();
+    }
+
+    /// <summary>
+    /// Tells the user how much the current tier is holding back, split by tier — the old single
+    /// "experimental" number hid the fact that .mat and .pet were behind the same tick.
+    /// </summary>
+    private void UpdateTierHint()
+    {
+        if (_pack == null)
+            return;
+
+        var selectedCount = _rows.Count(r => r.IsSelected);
+        if (selectedCount == 0)
+            return;
+
+        var ids = _rows.Where(r => r.IsSelected).Select(r => r.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var rules = _pack.Categories.Where(c => ids.Contains(c.Id)).SelectMany(c => c.Rules).ToList();
+        var fx = rules.Count(r => r.Tier == RiskTier.Fx);
+        var material = rules.Count(r => r.Tier == RiskTier.Material);
+        var hidden = rules.Count(r => r.Tier > CurrentTier);
+        if (hidden == 0)
+            return;
+
+        var detail = (fx, material) switch
         {
-            var ids = _rows.Where(r => r.IsSelected).Select(r => r.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var experimental = _pack.Categories
-                .Where(c => ids.Contains(c.Id))
-                .Sum(c => c.Rules.Count(r => r.Experimental));
-            if (experimental > 0)
-                AppendLog($"另有 {experimental} 条材质/粒子规则(.mat/.pet/.epk 等)按“实验性”跳过——勾选“实验性资源”可纳入 / {experimental} experimental rules skipped unless “Experimental” is enabled.");
-        }
+            (> 0, > 0) => $"特效 {fx} 条、材质 {material} 条 / {fx} effect and {material} material rules",
+            (> 0, _) => $"特效 {fx} 条 / {fx} effect rules",
+            _ => $"材质 {material} 条 / {material} material rules"
+        };
+        AppendLog($"当前风险档「{RiskTiers.ToKey(CurrentTier)}」跳过 {hidden} 条置空规则({detail})——换档可纳入 / " +
+                  $"{hidden} blanking rules skipped at tier “{RiskTiers.ToKey(CurrentTier)}” ({detail}) — raise the tier to include them.");
     }
 
     private void RefreshVisibleGroups()
@@ -471,7 +514,62 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (!_applyArmed)
+        // Parsed now, persisted only once the write actually starts: the material panel and the
+        // four-second arm both return early, and an abandoned apply must not leave edited ignore
+        // lines on disk.
+        _ignore = IgnoreList.FromLines((IgnoreBox.Text ?? "").Split('\n'));
+
+        var selected = _rows.Where(r => r.IsSelected).Select(r => r.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (selected.Count == 0)
+        {
+            StatusText.Text = "没有选择任何类别。 / No categories selected.";
+            return;
+        }
+
+        var request = new ApplyRequest
+        {
+            Game = _game,
+            Pack = _pack,
+            RulePackPath = _paths.DefaultRulePackPath,
+            Preset = PresetBox.SelectedItem as string ?? "safe",
+            Ignore = _ignore,
+            MaxTier = CurrentTier,
+            CategoryFilter = selected
+        };
+
+        // The material tier gets its own confirmation with real numbers, and it replaces the
+        // four-second arm: it is the stricter gate, and clicking 应用 twice after an explicit
+        // "this can black out ordinary rendering" panel would only train people to click through it.
+        if (request.MaxTier == RiskTier.Material && !_materialConfirmed)
+        {
+            SetBusy(true, "计算材质影响… / Planning");
+            PatchPlan preview;
+            try
+            {
+                preview = await Task.Run(() => _service.BuildPlan(request));
+            }
+            finally
+            {
+                SetBusy(false, null);
+            }
+
+            if (preview.MaterialFiles > 0)
+            {
+                MaterialConfirmText.Text =
+                    $"这个档位会把 {preview.MaterialFiles} 个 .mat 材质替换成空内容" +
+                    $"(抹掉 {Sizes.FormatBytes(preview.MaterialBytes)} 原始数据)," +
+                    $"外加 {preview.Changes.Count - preview.MaterialFiles} 个其它文件。 / " +
+                    $"This tier blanks {preview.MaterialFiles} .mat materials " +
+                    $"({Sizes.FormatBytes(preview.MaterialBytes)} of original content destroyed), " +
+                    $"plus {preview.Changes.Count - preview.MaterialFiles} other files.";
+                MaterialConfirmPanel.IsVisible = true;
+                SetStatus("请在下方确认是否置空材质。 / Confirm material blanking in the panel below.", warn: true);
+                AppendLog("等待材质确认 / waiting for material confirmation");
+                return;
+            }
+        }
+
+        if (!_applyArmed && !_materialConfirmed)
         {
             _applyArmed = true;
             ApplyButton.Content = "再次点击应用 / Confirm apply";
@@ -489,27 +587,7 @@ public partial class MainWindow : Window
 
         _applyArmed = false;
         ApplyButton.Content = "应用 / Apply";
-
-        _ignore = IgnoreList.FromLines((IgnoreBox.Text ?? "").Split('\n'));
         _ignore.Save(_paths.DefaultIgnorePath);
-
-        var selected = _rows.Where(r => r.IsSelected).Select(r => r.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        if (selected.Count == 0)
-        {
-            StatusText.Text = "没有选择任何类别。 / No categories selected.";
-            return;
-        }
-
-        var request = new ApplyRequest
-        {
-            Game = _game,
-            Pack = _pack,
-            RulePackPath = _paths.DefaultRulePackPath,
-            Preset = PresetBox.SelectedItem as string ?? "safe",
-            Ignore = _ignore,
-            IncludeExperimental = ExperimentalBox.IsChecked == true,
-            CategoryFilter = selected
-        };
 
         SetBusy(true, "应用中… / Applying…");
         try
@@ -525,7 +603,8 @@ public partial class MainWindow : Window
                 + plan.Missing.Count + plan.Unsupported.Count + plan.SkippedExperimental.Count;
             var buckets = $"未变 {plan.Unchanged.Count} / unchanged · 忽略 {plan.Ignored.Count} / ignored · " +
                           $"缺失 {plan.Missing.Count} / missing · 不支持 {plan.Unsupported.Count} / unsupported · " +
-                          $"实验 {plan.SkippedExperimental.Count} / experimental";
+                          $"实验 {plan.SkippedExperimental.Count} / experimental " +
+                          $"(特效 {plan.SkippedFxCount} · 材质 {plan.SkippedMaterialCount})";
 
             if (plan.Changes.Count > 0)
             {
@@ -537,7 +616,7 @@ public partial class MainWindow : Window
                 var reason = plan.Missing.Count > 0 && plan.Missing.Count * 2 >= attempted
                     ? "规则包与当前 index 不匹配(游戏已更新?):先“还原”,再“生成规则包” / the rule pack is stale vs the current index — restore, then rebuild rules"
                     : plan.SkippedExperimental.Count == attempted
-                        ? "所选类别全部是实验性资源:勾选“实验性资源”后重试 / every matched rule is experimental — enable “Experimental” and retry"
+                        ? "所选类别全是置空类资源:把「风险档」调到 fx(特效)或 material(材质)后重试 / every matched rule blanks a resource — raise the risk tier to fx (effects) or material and retry"
                         : plan.Ignored.Count == attempted
                             ? "全部被忽略列表拦截 / everything was blocked by the ignore list"
                             : plan.Unchanged.Count == attempted
@@ -562,6 +641,9 @@ public partial class MainWindow : Window
         }
         finally
         {
+            // Every material-tier write needs its own confirmation: arming once must not cover the
+            // next apply either, or the panel degrades into another click-through warning.
+            _materialConfirmed = false;
             SetBusy(false, null);
             RefreshStatus();
         }
@@ -596,7 +678,12 @@ public partial class MainWindow : Window
         SetBusy(true, "还原中… / Restoring…");
         try
         {
-            var result = await Task.Run(() => _service.Restore(new RestoreRequest { Game = _game }));
+            var scope = (RestoreScopeBox.SelectedItem as RestoreScopeItem)?.Tiers;
+            var result = await Task.Run(() => _service.Restore(
+                new RestoreRequest { Game = _game, UndoTiers = scope }));
+            if (result.Scoped)
+                AppendLog($"按档位还原:撤销 {result.FilesRestored} 个,保留 {result.FilesKept} 个仍生效的屏蔽 / " +
+                          $"scoped restore: {result.FilesRestored} undone, {result.FilesKept} still suppressed.");
             AppendLog(result.Message);
             StatusText.Text = result.RestoredIndex || result.PerFile || result.CleanedCustomBundles
                 ? "还原完成 / Restored."
@@ -706,14 +793,15 @@ public partial class MainWindow : Window
         }
 
         _ignore = IgnoreList.FromLines((IgnoreBox.Text ?? "").Split('\n'));
-        _profiles.Save(new Profile
+        var profile = new Profile
         {
             Name = name,
             Preset = PresetBox.SelectedItem as string ?? "safe",
             Categories = _rows.Where(r => r.IsSelected).Select(r => r.Id).ToList(),
-            Ignore = _ignore.Prefixes.ToList(),
-            IncludeExperimental = ExperimentalBox.IsChecked == true
-        });
+            Ignore = _ignore.Prefixes.ToList()
+        };
+        profile.SetTier(CurrentTier);
+        _profiles.Save(profile);
         RefreshProfiles();
         ProfileStatus.Text = $"已保存 / Saved: {name}";
     }
@@ -736,7 +824,7 @@ public partial class MainWindow : Window
 
         _loading = true;
         PresetBox.SelectedItem = profile.Preset;
-        ExperimentalBox.IsChecked = profile.IncludeExperimental;
+        TierBox.SelectedItem = TierItem.For(profile.EffectiveTier());
         IgnoreBox.Text = string.Join(Environment.NewLine, profile.Ignore);
         RefreshCategories();
 
@@ -814,9 +902,13 @@ public partial class MainWindow : Window
         if (_pack == null)
             return "无规则包 / No rule pack";
 
-        var experimental = _pack.Categories.Sum(c => c.Rules.Count(r => r.Experimental));
+        // Per tier, because one "experimental" number made a 50k-rule .mat class look identical
+        // to a 2.5k-rule .fxgraph class.
+        var fx = _pack.Categories.Sum(c => c.Rules.Count(r => r.Tier == RiskTier.Fx));
+        var material = _pack.Categories.Sum(c => c.Rules.Count(r => r.Tier == RiskTier.Material));
         return $"规则包 / Pack: {_pack.Name} · {_pack.RuleCount} rules · " +
-               $"{_pack.Categories.Count} categories · {experimental} experimental";
+               $"{_pack.Categories.Count} categories · 特效 {fx} · 材质 {material} / " +
+               $"{fx} fx · {material} material";
     }
 
     private void SetStatus(string text, bool warn = false)
@@ -844,11 +936,47 @@ public partial class MainWindow : Window
         LogBox.CaretIndex = LogBox.Text?.Length ?? 0;
     }
 
+    /// <summary>The tier the user is currently armed with. Never null-safe-by-accident: an
+    /// uninitialised ComboBox (no selection yet) means the safest tier, not "include everything".</summary>
+    private RiskTier CurrentTier => (TierBox.SelectedItem as TierItem)?.Tier ?? RiskTier.Safe;
+
+    private void OnTierChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        // Selecting an item during construction must not persist a half-restored window
+        // (that is exactly how the old checkbox lost its tick across restarts — see 85f908a).
+        if (_loading)
+            return;
+
+        _materialConfirmed = false;
+        MaterialConfirmPanel.IsVisible = false;
+        SaveSettings();
+        UpdateTierHint();
+    }
+
+    private void OnConfirmMaterialApply(object? sender, RoutedEventArgs e)
+    {
+        MaterialConfirmPanel.IsVisible = false;
+        _materialConfirmed = true;
+        // OnApply is an async void handler: confirming resumes it rather than awaiting it, exactly
+        // as clicking the button would.
+        OnApply(sender, e);
+    }
+
+    private void OnCancelMaterialApply(object? sender, RoutedEventArgs e)
+    {
+        // Cancelling is "not this time", not "change my saved preference": the tier box stays where
+        // the user left it, and the next 应用 click has to pass this panel again.
+        MaterialConfirmPanel.IsVisible = false;
+        _materialConfirmed = false;
+        SetStatus("已取消,未写入任何文件 / cancelled — nothing was written.", warn: true);
+        AppendLog("材质确认被取消,未写入 / material confirmation cancelled, nothing written");
+    }
+
     private void SaveSettings()
     {
         _settings.LastPreset = PresetBox.SelectedItem as string ?? _settings.LastPreset;
         _settings.Language = LanguageBox.SelectedItem as string ?? _settings.Language;
-        _settings.IncludeExperimental = ExperimentalBox.IsChecked == true;
+        _settings.SetTier(CurrentTier);
         if (_game != null)
             _settings.LastTargetPath = _game.TargetPath;
         SettingsStore.Save(_paths, _settings);
@@ -928,6 +1056,27 @@ public sealed class CategoryGroupRow : INotifyPropertyChanged
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
+}
+
+/// <summary>One entry of the risk-tier combo box. Kept as an explicit item type so the box can
+/// show bilingual text while the code only ever reads the enum.</summary>
+public sealed record TierItem(RiskTier Tier, string Label)
+{
+    public override string ToString() => Label;
+
+    public static TierItem For(RiskTier tier) => tier switch
+    {
+        RiskTier.Material => new TierItem(RiskTier.Material, "含材质置空(危险)/ + blank materials (.mat)"),
+        RiskTier.Fx => new TierItem(RiskTier.Fx, "含特效资源置空 / + blank effects (.pet/.epk/.fxgraph)"),
+        _ => new TierItem(RiskTier.Safe, "安全:只动脚本 / Safe: script surgery only")
+    };
+}
+
+/// <summary>One entry of the restore scope box; null tiers means "everything", which keeps the
+/// whole-index restore path (and its byte-identical result) available.</summary>
+public sealed record RestoreScopeItem(string Label, IReadOnlySet<RiskTier>? Tiers)
+{
+    public override string ToString() => Label;
 }
 
 public sealed record GroupFilterItem(string Id, string Label)

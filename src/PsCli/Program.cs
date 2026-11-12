@@ -17,7 +17,7 @@ internal static class Cli
     {
         "index", "bundles", "filter", "limit", "out", "game-path", "backup-dir", "backup",
         "path", "content", "game", "ggpk", "pack", "preset", "ignore", "name", "build",
-        "language", "profile", "categories", "action", "entry", "index-url"
+        "language", "profile", "categories", "action", "entry", "index-url", "experimental", "undo-tiers"
     };
 
     public static int Run(string[] args)
@@ -121,11 +121,13 @@ Usage:
   pscli read-file   --index <Bundles2/_.index.bin> --path <metadata/path> [--out <file>] [--text]
   pscli build-rules [--index <...>|--game <root>|--ggpk <file>] [--out <pack.json>] [--name <name>] [--build <build>]
   pscli list-rules  [--pack <pack.json>] [--language zh|en] [--json]
-  pscli plan        [--index <...>|--game <root>|--ggpk <file>] [--pack <pack.json>] --preset safe|clean|performance|full [--profile <name>] [--categories a,b] [--json] [--out <plan.json>]
-  pscli apply       [--index <...>|--game <root>|--ggpk <file>] [--pack <pack.json>] --preset safe|clean|performance|full [--profile <name>] [--categories a,b] [--yes] [--dry-run] [--force] [--include-experimental]
+  pscli plan        [--index <...>|--game <root>|--ggpk <file>] [--pack <pack.json>] --preset safe|clean|performance|full [--profile <name>] [--categories a,b] [--experimental safe|fx|material] [--json] [--out <plan.json>]
+  pscli apply       [--index <...>|--game <root>|--ggpk <file>] [--pack <pack.json>] --preset safe|clean|performance|full [--profile <name>] [--categories a,b] [--yes] [--dry-run] [--force] [--experimental safe|fx|material] [--include-experimental]
   pscli status      [--index <...>|--game <root>|--ggpk <file>] [--json]
-  pscli restore     [--index <...>|--game <root>|--ggpk <file>] [--backup <file>|--index-url <url>] [--clean-only] [--force] [--yes]
+  pscli restore     [--index <...>|--game <root>|--ggpk <file>] [--backup <file>|--index-url <url>] [--undo-tiers safe,fx,material] [--clean-only] [--force] [--yes]
                     default is a safe per-file restore after a game update (changed files are kept); --force restores the whole backup
+                    --undo-tiers restores only those tiers: e.g. "--undo-tiers material" gives the .mat files back
+                    while keeping the .ao surgery and the blanked effect resources in place
   pscli profiles    --action list|show|save|delete [--name <name>] [--preset ...] [--categories ...] [--ignore <file>]
   pscli backups     [--prune]
   pscli self-test   --index <Bundles2/_.index.bin> [--game-path <metadata/path>] [--backup-dir <dir>] [--yes] [--keep] [--force]
@@ -144,7 +146,13 @@ Common options:
   --yes               Actually perform a modifying operation
   --dry-run           Build the plan without writing
   --force             Continue despite game running / changed index / existing custom bundles
-  --include-experimental  Include .pet/.epk/.mat/.fxgraph rules
+  --experimental <tier>   Risk ceiling: safe/off (default) = .ao surgery + transparent .dds only;
+                          fx = also blank .pet/.epk/.fxgraph/.aoc to zero bytes;
+                          material = also blank .mat (materials are shared with ordinary
+                          rendering, so this is the tier that can black out normal geometry)
+  --include-experimental  Legacy alias for --experimental material (kept for old scripts)
+  --undo-tiers <list>     restore: comma-separated subset of safe,fx,material to undo (whole-index
+                          options --backup/--index-url/--clean-only/--force cannot be combined with it)
   --json              JSON output
 
 Windows: a game installed under Program Files needs an elevated terminal for apply/restore.

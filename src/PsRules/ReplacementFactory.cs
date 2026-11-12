@@ -5,8 +5,31 @@ namespace PsRules;
 
 public static class ReplacementFactory
 {
+    // Real client scripts use all of these shapes (verified against production .ao bodies):
+    //   this.attached = parent_ao.AddAttached( '<path>', <lock>);
+    //   parent_ao.RemoveEffectPack( "<path>" );
+    //   IfState( body, 1, { parent_ao.AddEffectPack( "<path>" ); } );
+    // Both quote styles occur, and the second argument is a placeholder whose name varies
+    // (<root>, <lock>), so it is matched as <...> rather than hardcoded to one spelling.
+    private const string CallShape =
+        @"(?:AddAttached|AddEffectPack|RemoveEffectPack)\s*\(\s*(?:'[^']*'|""[^""]*"")\s*(?:,\s*<[^>]*>\s*)?\)";
+
+    // Optional receiver (`parent_ao.`, `enemy.`) glued to the call name. It cannot cross
+    // whitespace, `(`, `,`, `;`, `{`, `}` or `=`, so it never swallows a surrounding block.
+    private const string Receiver = @"(?:[^\s(,;{}=]+[.:]\s*)?";
+
+    // An assignment whose entire right-hand side is one of these calls, ending the statement.
+    // Deleting only the call here would leave `this.attached = parent_ao.` — a syntax error —
+    // so the whole right-hand side collapses to `nil` and the variable stays defined for the
+    // paired `RemoveAttached( this.attached );` that the same script usually calls later.
+    private static readonly Regex AttachedAssignment = new(
+        @"(?<lhs>[^\s=][^=\n]*?=\s*)" + Receiver + CallShape + @"\s*;?\s*$",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Multiline);
+
+    // A call used as a standalone statement expression, or as the only content of a block:
+    // receiver, call and trailing semicolon all go away together, leaving valid syntax.
     private static readonly Regex EffectCall = new(
-        @"(?:enemy\.)?(?:AddAttached|AddEffectPack|RemoveEffectPack)\s*\(\s*'[^']*'\s*(?:,\s*<root>\s*)?\)\s*;?",
+        Receiver + CallShape + @"\s*;?",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Lazy<byte[]> TransparentDdsLazy = new(CreateTransparentDds);
@@ -17,7 +40,7 @@ public static class ReplacementFactory
     {
         if (strategy == StrategyKind.Auto)
         {
-            if (!RulePackBuilder.TryGetStrategy(path, out strategy, out _))
+            if (!RulePackBuilder.TryGetStrategy(path, out strategy))
                 strategy = StrategyKind.Keep;
         }
 
@@ -64,7 +87,10 @@ public static class ReplacementFactory
             return original.ToArray();
         }
 
-        var replaced = EffectCall.Replace(text, "");
+        // Assignments first: they rewrite the whole right-hand side. The statement-expression
+        // pass then only sees calls that are genuinely standalone.
+        var replaced = EffectCall.Replace(
+            AttachedAssignment.Replace(text, "${lhs}nil;"), "");
         if (ReferenceEquals(replaced, text) || replaced == text)
             return original.ToArray();
 

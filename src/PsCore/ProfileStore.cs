@@ -1,4 +1,5 @@
 using System.Text.Json;
+using PsRules;
 
 namespace PsCore;
 
@@ -8,7 +9,25 @@ public sealed class Profile
     public string Preset { get; set; } = "safe";
     public List<string> Categories { get; set; } = [];
     public List<string> Ignore { get; set; } = [];
+
+    /// <summary>Legacy mirror of <see cref="ExperimentalTier"/>; see <see cref="AppSettings.IncludeExperimental"/>.</summary>
     public bool IncludeExperimental { get; set; }
+
+    /// <summary>"safe" | "fx" | "material", stored as a string for the same reason as in AppSettings.</summary>
+    public string? ExperimentalTier { get; set; }
+
+    /// <summary>A profile saved before tiers existed meant "all blanking strategies", so it migrates to material.</summary>
+    public RiskTier EffectiveTier() =>
+        RiskTiers.TryParse(ExperimentalTier, out var tier)
+            ? tier
+            : IncludeExperimental ? RiskTier.Material : RiskTier.Safe;
+
+    public void SetTier(RiskTier tier)
+    {
+        ExperimentalTier = RiskTiers.ToKey(tier);
+        IncludeExperimental = tier > RiskTier.Safe;
+    }
+
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
