@@ -73,5 +73,49 @@ $profiles = (dotnet $Cli profiles --action list) -join "`n"
 if ($profiles -notmatch "test") { throw "profile list failed`n$profiles" }
 dotnet $Cli profiles --action delete --name test | Out-Null
 
+# --include-experimental → apply → restore, the whole loop on a blanking (.pet) rule.
+# plan exits 6 when it finds nothing to change, which is exactly the unticked case.
+Write-Host "== CLI end-to-end: --include-experimental loop =="
+$exp = Join-Path $Tmp "experimental"
+$expBundles = Join-Path $exp "Bundles2"
+$expIndex = Join-Path $expBundles "_.index.bin"
+$expPack = Join-Path $exp "pack.json"
+$expPath = "metadata/effects/spells/fire/burn.pet"
+$expContent = "PARTICLE-DATA-DO-NOT-TOUCH"
+$expected = $expContent.Length
+
+function Exp-Size {
+    $read = (dotnet $Cli read-file --index $expIndex --path $expPath) -join "`n"
+    if ($read -match "size\s*:\s*(\d+)") { return [int]$Matches[1] }
+    throw "read-file did not report a size`n$read"
+}
+
+dotnet $Cli fixture --out $expBundles --path $expPath --content $expContent | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "experimental fixture failed" }
+dotnet $Cli build-rules --index $expIndex --out $expPack --name "Exp Test" --build synthetic | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "experimental build-rules failed" }
+
+$plan = (dotnet $Cli plan --index $expIndex --pack $expPack --preset safe) -join "`n"
+if ($plan -notmatch "files      : 0") { throw "unticked plan should change nothing`n$plan" }
+if ($plan -notmatch "skippedExp : 1") { throw "unticked plan should report the skipped rule`n$plan" }
+
+$apply = (dotnet $Cli apply --index $expIndex --pack $expPack --preset safe --yes) -join "`n"
+if ($apply -notmatch "files      : 0" -or $apply -notmatch "skippedExp : 1") { throw "unticked apply must skip the blanking rule`n$apply" }
+$status = (dotnet $Cli status --index $expIndex) -join "`n"
+if ($status -notmatch "modified      : False") { throw "unticked apply must not modify the client`n$status" }
+if ((Exp-Size) -ne $expected) { throw "unticked apply touched $expPath" }
+
+$apply = (dotnet $Cli apply --index $expIndex --pack $expPack --preset safe --include-experimental --yes) -join "`n"
+if ($apply -notmatch "files      : 1" -or $apply -notmatch "skippedExp : 0") { throw "--include-experimental must blank the rule`n$apply" }
+$status = (dotnet $Cli status --index $expIndex) -join "`n"
+if ($status -notmatch "modified      : True") { throw "ticked apply must report modified`n$status" }
+if ((Exp-Size) -ne 0) { throw "--include-experimental did not blank $expPath" }
+
+$restore = (dotnet $Cli restore --index $expIndex --yes) -join "`n"
+if ($restore -notmatch "index restored") { throw "restore failed`n$restore" }
+if ((Exp-Size) -ne $expected) { throw "restore did not give $expPath back" }
+$status = (dotnet $Cli status --index $expIndex) -join "`n"
+if ($status -notmatch "modified      : False") { throw "restore must return to original`n$status" }
+
 Write-Host ""
 Write-Host "ALL TESTS PASSED"

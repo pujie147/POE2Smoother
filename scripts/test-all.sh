@@ -64,5 +64,44 @@ dotnet "$CLI" profiles --action save --name test --preset safe --categories skil
 dotnet "$CLI" profiles --action list | grep -q "test"
 dotnet "$CLI" profiles --action delete --name test >/dev/null
 
+# --include-experimental → apply → restore, the whole loop on a blanking (.pet) rule.
+# plan exits 6 when it finds nothing to change, which is exactly the unticked case.
+echo "== CLI end-to-end: --include-experimental loop =="
+EXP="$TMP/experimental"
+EXP_BUNDLES="$EXP/Bundles2"
+EXP_INDEX="$EXP_BUNDLES/_.index.bin"
+EXP_PACK="$EXP/pack.json"
+EXP_PATH="metadata/effects/spells/fire/burn.pet"
+EXP_CONTENT="PARTICLE-DATA-DO-NOT-TOUCH"
+EXPECTED=${#EXP_CONTENT}
+
+dotnet "$CLI" fixture --out "$EXP_BUNDLES" --path "$EXP_PATH" --content "$EXP_CONTENT" >/dev/null
+dotnet "$CLI" build-rules --index "$EXP_INDEX" --out "$EXP_PACK" --name "Exp Test" --build synthetic >/dev/null
+
+exp_size() {
+  dotnet "$CLI" read-file --index "$EXP_INDEX" --path "$EXP_PATH" | grep "^size" | tr -dc '0-9'
+}
+
+PLAN=$(dotnet "$CLI" plan --index "$EXP_INDEX" --pack "$EXP_PACK" --preset safe) || true
+echo "$PLAN" | grep -q "files      : 0" || { echo "$PLAN"; exit 1; }
+echo "$PLAN" | grep -q "skippedExp : 1" || { echo "$PLAN"; exit 1; }
+
+APPLY=$(dotnet "$CLI" apply --index "$EXP_INDEX" --pack "$EXP_PACK" --preset safe --yes)
+echo "$APPLY" | grep -q "files      : 0" || { echo "$APPLY"; exit 1; }
+echo "$APPLY" | grep -q "skippedExp : 1" || { echo "$APPLY"; exit 1; }
+dotnet "$CLI" status --index "$EXP_INDEX" | grep -q "modified      : False" || { echo "unticked apply must not modify the client"; exit 1; }
+[ "$(exp_size)" = "$EXPECTED" ] || { echo "unticked apply touched $EXP_PATH"; exit 1; }
+
+APPLY=$(dotnet "$CLI" apply --index "$EXP_INDEX" --pack "$EXP_PACK" --preset safe --include-experimental --yes)
+echo "$APPLY" | grep -q "files      : 1" || { echo "$APPLY"; exit 1; }
+echo "$APPLY" | grep -q "skippedExp : 0" || { echo "$APPLY"; exit 1; }
+dotnet "$CLI" status --index "$EXP_INDEX" | grep -q "modified      : True" || { echo "ticked apply must report modified"; exit 1; }
+[ "$(exp_size)" = "0" ] || { echo "--include-experimental did not blank $EXP_PATH"; exit 1; }
+
+RESTORE=$(dotnet "$CLI" restore --index "$EXP_INDEX" --yes)
+echo "$RESTORE" | grep -q "index restored" || { echo "$RESTORE"; exit 1; }
+[ "$(exp_size)" = "$EXPECTED" ] || { echo "restore did not give $EXP_PATH back"; exit 1; }
+dotnet "$CLI" status --index "$EXP_INDEX" | grep -q "modified      : False" || { echo "restore must return to original"; exit 1; }
+
 echo
 echo "ALL TESTS PASSED"

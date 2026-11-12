@@ -1,8 +1,10 @@
 using System.Collections.ObjectModel;
 using System.Reflection;
+using System.Text;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless;
+using Avalonia.Interactivity;
 using Avalonia.LogicalTree;
 using Avalonia.Threading;
 using PsApp;
@@ -312,6 +314,185 @@ updateKind.Invoke(window, null);
 Dispatcher.UIThread.RunJobs();
 if (kindText.Text?.Contains("Steam") != true)
     throw new Exception($"steam kind hint missing: {kindText.Text}");
+
+// ---------------------------------------------------------------------------
+// 勾选实验性 → apply → restore: the whole loop through the real checkbox and buttons
+// ---------------------------------------------------------------------------
+{
+    // A real, writable synthetic client: one stable .ao rule plus the two blanking strategies
+    // (.pet/.mat) that the experimental checkbox gates.
+    var loopRoot = PsTests.TestIndexBuilder.NewRoot("ui-experimental");
+    const string loopAoPath = "metadata/effects/spells/fire/fireball.ao";
+    const string loopPetPath = "metadata/effects/spells/fire/burn.pet";
+    const string loopMatPath = "metadata/effects/spells/fire/shield.mat";
+    var loopOriginalAo = "version 1\nAddAttached( 'metadata/effects/spells/fire/burn.pet', <root> );\nKeepThis();\n";
+    var loopPetBytes = new byte[] { 1, 2, 3, 4, 5, 6, 7 };
+    var loopMatBytes = new byte[] { 8, 9, 10, 11 };
+    var loopBundles = Path.Combine(loopRoot, "Bundles2");
+    var loopIndex = PsTests.TestIndexBuilder.Build(loopBundles, new (string, byte[])[]
+    {
+        (loopAoPath, Encoding.UTF8.GetBytes(loopOriginalAo)),
+        (loopPetPath, loopPetBytes),
+        (loopMatPath, loopMatBytes)
+    });
+    var loopPackPath = Path.Combine(home, "rulepacks", "ui-experimental.json");
+    var (loopPack, loopPackStats) = RulePackBuilder.Build(
+        [loopAoPath, loopPetPath, loopMatPath], "UI Experimental", "test");
+    if (loopPackStats.Rules != 3 || loopPack.Categories.Sum(c => c.Rules.Count(r => r.Experimental)) != 2)
+        throw new Exception($"fixture should carry 3 rules / 2 experimental: {loopPackStats.Rules}");
+    RulePackStore.Save(loopPack, loopPackPath);
+
+    var loopGame = PsCore.SteamLibraryLocator.FromIndex(loopIndex);
+    var loopWindow = new MainWindow();
+    var loopExperimental = loopWindow.FindControl<CheckBox>("ExperimentalBox")
+                           ?? throw new Exception("ExperimentalBox missing");
+    var loopApply = loopWindow.FindControl<Button>("ApplyButton") ?? throw new Exception("ApplyButton missing");
+    var loopRestore = loopWindow.FindControl<Button>("RestoreButton") ?? throw new Exception("RestoreButton missing");
+    var loopStatus = loopWindow.FindControl<TextBlock>("StatusText") ?? throw new Exception("StatusText missing");
+    var loopState = loopWindow.FindControl<TextBlock>("StateText") ?? throw new Exception("StateText missing");
+    var loopLog = loopWindow.FindControl<TextBox>("LogBox") ?? throw new Exception("LogBox missing");
+    var loopStateFile = Path.Combine(home, "state.json");
+
+    gameField.SetValue(loopWindow, loopGame);
+    loadPack.Invoke(loopWindow, [loopPackPath]);
+    refreshStatus.Invoke(loopWindow, null);
+    Dispatcher.UIThread.RunJobs();
+
+    if (loopExperimental.IsChecked != false)
+        throw new Exception("experimental must start unticked");
+    if (File.Exists(loopStateFile))
+        throw new Exception("the loop needs a clean state file to start from");
+
+    // Apply/Restore are async void handlers: the click arms the button, the second click runs
+    // the work on a background task and reports through StatusText. Pump the dispatcher until
+    // a terminal message lands, then assert against the bytes actually written to the index.
+    void ClickTwice(Button button)
+    {
+        button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+    }
+
+    void PumpUntil(Func<bool> settled, string what)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(60);
+        while (!settled())
+        {
+            if (DateTime.UtcNow > deadline)
+                throw new Exception($"GUI {what} timed out at: {loopStatus.Text}");
+            Dispatcher.UIThread.RunJobs();
+            Thread.Sleep(20);
+        }
+        Dispatcher.UIThread.RunJobs();
+    }
+
+    bool ApplySettled() => loopStatus.Text is { } t &&
+                           (t.Contains("应用完成") || t.Contains("没有生效") || t.Contains("应用失败"));
+    bool RestoreSettled() => loopStatus.Text is { } t &&
+                             (t.Contains("还原完成") || t.Contains("还原失败"));
+
+    byte[] LiveBytes(string path)
+    {
+        using var read = PsCore.IndexSession.OpenReadOnly(loopGame);
+        read.TryGetFile(path, out var record);
+        return record!.Read().ToArray();
+    }
+
+    // 未勾选: only the .ao is suppressed, and the two blanking rules have to be reported
+    // (in the status buckets and as a log hint pointing at the checkbox).
+    ClickTwice(loopApply);
+    PumpUntil(ApplySettled, "unticked apply");
+    if (loopStatus.Text!.Contains("应用完成") != true)
+        throw new Exception($"unticked apply failed: {loopStatus.Text}");
+    if (!loopStatus.Text.Contains("1/3 active") || !loopStatus.Text.Contains("实验 2 / experimental"))
+        throw new Exception($"skip bucket not reported while unticked: {loopStatus.Text}");
+    if (loopLog.Text!.Contains("勾选“实验性资源”") != true)
+        throw new Exception($"loading a pack with blanking rules should hint at the box: {loopLog.Text}");
+    if (LiveBytes(loopPetPath).SequenceEqual(loopPetBytes) != true)
+        throw new Exception(".pet must stay untouched while the box is unticked");
+    if (LiveBytes(loopMatPath).SequenceEqual(loopMatBytes) != true)
+        throw new Exception(".mat must stay untouched while the box is unticked");
+
+    // 勾选实验性: the same click now has to reach the blanking rules too — the second apply
+    // resets to the backup first, so the .ao is re-stripped instead of reporting "0 files".
+    loopExperimental.IsChecked = true;
+    ClickTwice(loopApply);
+    PumpUntil(ApplySettled, "ticked apply");
+    if (loopStatus.Text!.Contains("应用完成") != true)
+        throw new Exception($"ticked apply failed: {loopStatus.Text}");
+    if (!loopStatus.Text.Contains("3/3 active") || !loopStatus.Text.Contains("实验 0 / experimental"))
+        throw new Exception($"ticking should move both skipped rules into the change set: {loopStatus.Text}");
+    if (LiveBytes(loopPetPath).Length != 0)
+        throw new Exception("ticked apply must blank the .pet");
+    if (LiveBytes(loopMatPath).Length != 0)
+        throw new Exception("ticked apply must blank the .mat");
+    if (Encoding.UTF8.GetString(LiveBytes(loopAoPath)).Contains("AddAttached"))
+        throw new Exception("ticked apply must keep suppressing the .ao");
+    if (!File.Exists(loopStateFile))
+        throw new Exception("apply must leave a state file behind");
+
+    // restore: everything the tick wrote has to go back, byte for byte.
+    ClickTwice(loopRestore);
+    PumpUntil(RestoreSettled, "restore");
+    if (loopStatus.Text!.Contains("还原完成") != true)
+        throw new Exception($"restore failed: {loopStatus.Text}");
+    if (File.Exists(loopStateFile))
+        throw new Exception("restore must clear the state file");
+    if (LiveBytes(loopPetPath).SequenceEqual(loopPetBytes) != true)
+        throw new Exception("restored .pet must have its original bytes");
+    if (LiveBytes(loopMatPath).SequenceEqual(loopMatBytes) != true)
+        throw new Exception("restored .mat must have its original bytes");
+    if (Encoding.UTF8.GetString(LiveBytes(loopAoPath)) != loopOriginalAo)
+        throw new Exception("restored .ao must have its original script");
+    if (loopState.Text!.Contains("原始 / original") != true)
+        throw new Exception($"status should read original after restore: {loopState.Text}");
+
+    // 勾选实验性 is a preference: the tick has to survive a restart, and an untick has to persist too.
+    var saveSettings = typeof(MainWindow).GetMethod("SaveSettings",
+        BindingFlags.Instance | BindingFlags.NonPublic) ?? throw new Exception("SaveSettings not found");
+    saveSettings.Invoke(loopWindow, null);
+    var savedSettings = File.ReadAllText(Path.Combine(home, "settings.json"));
+    if (!savedSettings.Contains("\"IncludeExperimental\": true"))
+        throw new Exception($"the tick must be persisted: {savedSettings}");
+    var reopened = new MainWindow();
+    if (reopened.FindControl<CheckBox>("ExperimentalBox")?.IsChecked != true)
+        throw new Exception("a reopened window must restore the experimental tick");
+    if (File.ReadAllText(Path.Combine(home, "settings.json")) != savedSettings)
+        throw new Exception("opening a window must not rewrite the saved settings");
+
+    // A profile carries the tick too: 存档案 → 取消勾选 → 载入档案 must put it back on.
+    var loopProfileName = loopWindow.FindControl<TextBox>("ProfileNameBox")
+                          ?? throw new Exception("ProfileNameBox missing");
+    var saveProfile = typeof(MainWindow).GetMethod("OnSaveProfile",
+        BindingFlags.Instance | BindingFlags.NonPublic) ?? throw new Exception("OnSaveProfile not found");
+    var loadProfile = typeof(MainWindow).GetMethod("OnLoadProfile",
+        BindingFlags.Instance | BindingFlags.NonPublic) ?? throw new Exception("OnLoadProfile not found");
+
+    loopExperimental.IsChecked = true;
+    loopProfileName.Text = "ui-experimental";
+    saveProfile.Invoke(loopWindow, new object?[] { null, null });
+    loopExperimental.IsChecked = false;
+    loadProfile.Invoke(loopWindow, new object?[] { null, null });
+    Dispatcher.UIThread.RunJobs();
+    if (loopExperimental.IsChecked != true)
+        throw new Exception("loading a profile must restore the experimental tick");
+
+    loopExperimental.IsChecked = false;
+    saveSettings.Invoke(loopWindow, null);
+    if ((new MainWindow()).FindControl<CheckBox>("ExperimentalBox")?.IsChecked == true)
+        throw new Exception("a reopened window must restore an unticked experimental box");
+
+    // Leaving the box off after the loop means a later apply still never touches those files.
+    ClickTwice(loopApply);
+    PumpUntil(ApplySettled, "re-apply after restore");
+    if (loopStatus.Text!.Contains("1/3 active") != true)
+        throw new Exception($"re-applying unticked should skip both blanking rules again: {loopStatus.Text}");
+    if (LiveBytes(loopPetPath).SequenceEqual(loopPetBytes) != true)
+        throw new Exception("re-applied unticked run must leave the .pet alone");
+    ClickTwice(loopRestore);
+    PumpUntil(RestoreSettled, "final restore");
+    if (LiveBytes(loopAoPath).SequenceEqual(Encoding.UTF8.GetBytes(loopOriginalAo)) != true)
+        throw new Exception("the loop must end on the original client bytes");
+}
 
 window.Show();
 Dispatcher.UIThread.RunJobs();

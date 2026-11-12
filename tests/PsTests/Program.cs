@@ -567,11 +567,18 @@ Check("path: from game root -> index", Path.GetFullPath(fromRoot.IndexPath) == P
         Name = "deck-safe",
         Preset = "safe",
         Categories = ["skill.fire"],
-        Ignore = ["metadata/monsters"]
+        Ignore = ["metadata/monsters"],
+        IncludeExperimental = true
     });
     Check("profile: listed", store.List().Contains("deck-safe"));
     var loaded = store.Load("deck-safe");
     Check("profile: loaded", loaded != null && loaded.Categories.Contains("skill.fire"));
+    // The GUI/CLI re-apply a saved profile with its own experimental tick; losing it would quietly
+    // drop every blanking rule the user had saved.
+    Check("profile: experimental tick survives the round trip", loaded!.IncludeExperimental);
+    store.Save(new Profile { Name = "plain", Preset = "safe", Categories = ["skill.fire"] });
+    Check("profile: a profile saved without the tick stays unticked",
+        store.Load("plain") is { IncludeExperimental: false });
     Check("profile: deleted", store.Delete("deck-safe") && !store.List().Contains("deck-safe"));
 }
 
@@ -682,6 +689,294 @@ Check("path: from game root -> index", Path.GetFullPath(fromRoot.IndexPath) == P
         Check("ggpk: original ao content back",
             Encoding.UTF8.GetString(aoRecord!.Read().ToArray()) == originalAo);
     }
+}
+
+// ---------------------------------------------------------------------------
+// AppService: the complete experimental loop — tick "Experimental" → apply → restore
+// ---------------------------------------------------------------------------
+{
+    var root = TestIndexBuilder.NewRoot("experimental-loop");
+    var bundles = Path.Combine(root, "Bundles2");
+    const string aoPath = "metadata/effects/spells/fire/fireball.ao";
+    const string ddsPath = "metadata/effects/spells/fire/tex.dds";
+    var originalAo = "version 1\nAddAttached( 'metadata/effects/spells/fire/burn.pet', <root> );\nKeepThis();\n";
+    // Every blanking strategy the "Experimental" checkbox gates.
+    var blanking = new (string Path, byte[] Original)[]
+    {
+        ("metadata/effects/spells/fire/burn.pet", new byte[] { 10, 20, 30, 40, 50 }),
+        ("metadata/effects/spells/fire/burn.epk", new byte[] { 1, 1, 1, 1, 1, 1, 1, 1 }),
+        ("metadata/effects/spells/fire/shield.mat", new byte[] { 7, 7, 7, 7 }),
+        ("metadata/effects/spells/fire/spark.fxgraph", new byte[] { 2, 2, 2 }),
+        ("metadata/effects/spells/fire/model.aoc", new byte[] { 4, 4 })
+    };
+    var fixture = new List<(string Path, byte[] Content)>
+    {
+        (aoPath, Encoding.UTF8.GetBytes(originalAo)),
+        (ddsPath, new byte[] { 1, 2, 3, 4 })
+    };
+    fixture.AddRange(blanking.Select(b => (b.Path, b.Original)));
+    var indexPath = TestIndexBuilder.Build(bundles, fixture);
+    var originalHash = HashUtil.Sha256File(indexPath);
+
+    var game = SteamLibraryLocator.FromIndex(indexPath);
+    var appPaths = new AppPaths(Path.Combine(root, "home"));
+    appPaths.Ensure();
+    var service = new AppService(appPaths);
+    var (packE, _) = service.BuildRules(game, "Experimental Loop", "test");
+
+    ApplyRequest Request(bool includeExperimental) => new()
+    {
+        Game = game,
+        Pack = packE,
+        Preset = "safe",
+        Ignore = IgnoreList.Default(),
+        IncludeExperimental = includeExperimental,
+        Force = true
+    };
+
+    static byte[] LiveBytes(IndexSession session, string path)
+    {
+        session.TryGetFile(path, out var record);
+        return record!.Read().ToArray();
+    }
+
+    // Unticked: each blanking rule must be *named* in the plan, and none may reach the index.
+    var offPlan = service.BuildPlan(Request(false));
+    Check("exp-off: only stable rules are changes",
+        offPlan.Changes.Count == 2 && offPlan.Changes.All(c => !c.Experimental),
+        $"count={offPlan.Changes.Count}");
+    Check("exp-off: every blanking rule lands in the skip bucket",
+        offPlan.SkippedExperimental.Count == blanking.Length &&
+        blanking.All(b => offPlan.SkippedExperimental.Contains(b.Path, StringComparer.OrdinalIgnoreCase)));
+    Check("exp-off: no blanking rule is silently dropped",
+        offPlan.Missing.Count == 0 && offPlan.Unsupported.Count == 0 && offPlan.Ignored.Count == 0);
+
+    // Ticked: the loop must cover exactly the rules the unticked plan skipped — nothing more, nothing less.
+    var onPlan = service.BuildPlan(Request(true));
+    Check("exp-on: ticking applies stable + skipped rules",
+        new HashSet<string>(onPlan.Changes.Select(c => c.Path), StringComparer.OrdinalIgnoreCase).SetEquals(
+            offPlan.Changes.Select(c => c.Path).Concat(offPlan.SkippedExperimental)),
+        $"on={onPlan.Changes.Count}, off={offPlan.Changes.Count}, skipped={offPlan.SkippedExperimental.Count}");
+    Check("exp-on: nothing left in the skip bucket",
+        onPlan.SkippedExperimental.Count == 0 &&
+        onPlan.Changes.Count(c => c.Experimental) == blanking.Length);
+
+    var offResult = service.Apply(Request(false));
+    Check("exp-off: apply writes only the stable rules",
+        offResult.Plan.Changes.Count == 2 && offResult.Plan.SkippedExperimental.Count == blanking.Length);
+    Check("exp-off: state tracks 2 files", StateStore.Load(appPaths) is { PatchedFiles.Count: 2 });
+    using (var read = IndexSession.OpenReadOnly(game))
+    {
+        Check("exp-off: .ao stripped", !Encoding.UTF8.GetString(LiveBytes(read, aoPath)).Contains("AddAttached"));
+        foreach (var b in blanking)
+            Check($"exp-off: {Path.GetFileName(b.Path)} untouched while unticked",
+                LiveBytes(read, b.Path).SequenceEqual(b.Original));
+    }
+
+    // Tick the box and apply again: the second apply resets to the backup first, so the already
+    // stripped .ao is re-planned as a change instead of quietly reporting "0 files".
+    var onResult = service.Apply(Request(true));
+    Check("exp-on: apply covers every selected rule",
+        onResult.Plan.Changes.Count == blanking.Length + 2 &&
+        onResult.Plan.Unchanged.Count == 0 &&
+        onResult.Plan.SkippedExperimental.Count == 0,
+        $"changes={onResult.Plan.Changes.Count}, unchanged={onResult.Plan.Unchanged.Count}");
+    Check("exp-on: backup created", File.Exists(onResult.BackupPath));
+    using (var read = IndexSession.OpenReadOnly(game))
+    {
+        foreach (var b in blanking)
+            Check($"exp-on: {Path.GetFileName(b.Path)} blanked", LiveBytes(read, b.Path).Length == 0);
+        Check("exp-on: .ao stripped", !Encoding.UTF8.GetString(LiveBytes(read, aoPath)).Contains("AddAttached"));
+        Check("exp-on: .dds transparent", LiveBytes(read, ddsPath).Length == 136);
+    }
+
+    var state = StateStore.Load(appPaths)!;
+    var emptySha = HashUtil.Sha256Bytes([]);
+    Check("exp-on: state tracks every patched file", state.PatchedFiles.Count == blanking.Length + 2);
+    Check("exp-on: blanked files keep the original coordinates they can be redirected to",
+        state.PatchedFiles.Count(f => f.OriginalSize > 0 && f.AppliedSize == 0 &&
+                                     f.AppliedSha256.Equals(emptySha, StringComparison.OrdinalIgnoreCase)) ==
+        blanking.Length);
+    var applied = service.GetStatus(game);
+    Check("exp-on: status modified", applied.IsModified);
+    Check("exp-on: custom bundles present", applied.CustomBundlesExist);
+    Check("exp-on: backup reachable from the state", applied.BackupExists);
+
+    // Restore has to hand the client back byte-for-byte, blanked files included.
+    var restore = service.Restore(new RestoreRequest { Game = game });
+    Check("exp-restore: whole index restored", restore.RestoredIndex && !restore.PerFile);
+    Check("exp-restore: index identical to the original", HashUtil.Sha256File(indexPath) == originalHash);
+    Check("exp-restore: custom bundles cleaned",
+        restore.CleanedCustomBundles && !BackupManager.HasCustomBundles(bundles));
+    Check("exp-restore: state removed", StateStore.Load(appPaths) == null);
+    Check("exp-restore: status original", !service.GetStatus(game).IsModified);
+    using (var read = IndexSession.OpenReadOnly(game))
+    {
+        Check("exp-restore: .ao content back", Encoding.UTF8.GetString(LiveBytes(read, aoPath)) == originalAo);
+        foreach (var b in blanking)
+            Check($"exp-restore: {Path.GetFileName(b.Path)} bytes back",
+                LiveBytes(read, b.Path).SequenceEqual(b.Original));
+    }
+
+    // Untick again after the restore: the loop stays repeatable and the blanking rules stay out.
+    var reapply = service.Apply(Request(false));
+    Check("exp-reapply: stable rules re-applied, blanking still skipped",
+        reapply.Plan.Changes.Count == 2 && reapply.Plan.SkippedExperimental.Count == blanking.Length);
+    using (var read = IndexSession.OpenReadOnly(game))
+    {
+        foreach (var b in blanking)
+            Check($"exp-reapply: {Path.GetFileName(b.Path)} still original",
+                LiveBytes(read, b.Path).SequenceEqual(b.Original));
+    }
+    service.Restore(new RestoreRequest { Game = game });
+    Check("exp-reapply: second restore is clean too",
+        !service.GetStatus(game).IsModified && StateStore.Load(appPaths) == null &&
+        HashUtil.Sha256File(indexPath) == originalHash);
+}
+
+// ---------------------------------------------------------------------------
+// AppService: per-file restore of an experimental apply (0-byte records redirect back)
+// ---------------------------------------------------------------------------
+{
+    var root = TestIndexBuilder.NewRoot("experimental-perfile");
+    var bundles = Path.Combine(root, "Bundles2");
+    const string aoPath = "metadata/effects/spells/alpha/fireball.ao";
+    const string petPath = "metadata/effects/spells/alpha/burn.pet";
+    const string matPath = "metadata/effects/spells/alpha/shield.mat";
+    var originalAo = "version 1\nAddAttached( 'metadata/effects/spells/alpha/burn.pet', <root> );\nKeepThis();\n";
+    var pet = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
+    var mat = new byte[] { 9, 8, 7 };
+    var indexPath = TestIndexBuilder.Build(bundles, new[]
+    {
+        (aoPath, Encoding.UTF8.GetBytes(originalAo)),
+        (petPath, pet),
+        (matPath, mat)
+    });
+    var game = SteamLibraryLocator.FromIndex(indexPath);
+    var appPaths = new AppPaths(Path.Combine(root, "home"));
+    var service = new AppService(appPaths);
+    var (packP, _) = service.BuildRules(game, "Experimental Per-File", "test");
+
+    service.Apply(new ApplyRequest
+    {
+        Game = game, Pack = packP, Preset = "safe", Ignore = IgnoreList.Default(),
+        IncludeExperimental = true, Force = true
+    });
+    Check("exp-perfile: three files suppressed", StateStore.Load(appPaths) is { PatchedFiles.Count: 3 });
+
+    // A game update rewrites the blanked .pet; the .ao and the blanked .mat stay as we wrote them.
+    using (var work = IndexSession.OpenWorkCopy(indexPath, bundles))
+    {
+        work.TryGetFile(petPath, out var rec);
+        rec!.Write(new byte[] { 42, 42 });
+        work.Save();
+        work.Commit();
+    }
+
+    var restore = service.Restore(new RestoreRequest { Game = game });
+    // PerFile is what separates a redirect restore from a whole-index backup overwrite;
+    // RestoredIndex is true in both (per-file also rewrites the index records it redirects).
+    Check("exp-perfile: per-file restore chosen", restore.PerFile);
+    Check("exp-perfile: files we still own are redirected back", restore.FilesRestored == 2);
+    Check("exp-perfile: updated file skipped",
+        restore.FilesSkipped == 1 && restore.SkippedPaths.Contains(petPath));
+    using (var read = IndexSession.OpenReadOnly(game))
+    {
+        read.TryGetFile(aoPath, out var ao);
+        Check("exp-perfile: .ao original bytes back",
+            Encoding.UTF8.GetString(ao!.Read().ToArray()) == originalAo);
+        read.TryGetFile(matPath, out var m);
+        Check("exp-perfile: zero-byte blanking redirects to original bytes",
+            m!.Read().ToArray().SequenceEqual(mat));
+        read.TryGetFile(petPath, out var p);
+        Check("exp-perfile: updated .pet keeps the new content", p!.Read().ToArray().SequenceEqual(new byte[] { 42, 42 }));
+    }
+    Check("exp-perfile: state cleared", StateStore.Load(appPaths) == null);
+}
+
+// ---------------------------------------------------------------------------
+// Standalone client: the same experimental loop inside Content.ggpk
+// ---------------------------------------------------------------------------
+{
+    var root = TestIndexBuilder.NewRoot("ggpk-experimental-loop");
+    var bundles = Path.Combine(root, "Bundles2");
+    const string aoPath = "metadata/effects/spells/fire/fireball.ao";
+    const string petPath = "metadata/effects/spells/fire/burn.pet";
+    const string matPath = "metadata/effects/spells/fire/shield.mat";
+    var originalAo = "version 1\nAddAttached( 'metadata/effects/spells/fire/burn.pet', <root> );\nKeepThis();\n";
+    var pet = new byte[] { 5, 5, 5, 5, 5 };
+    var mat = new byte[] { 6, 6, 6 };
+    TestIndexBuilder.Build(bundles, new[]
+    {
+        (aoPath, Encoding.UTF8.GetBytes(originalAo)),
+        (petPath, pet),
+        (matPath, mat)
+    });
+
+    var ggpkPath = TestGgpkBuilder.Wrap(bundles, Path.Combine(root, "Content.ggpk"));
+    var game = StandaloneLocator.FromGgpk(ggpkPath);
+    var store = TargetStore.For(game);
+    var originalHash = store.HashIndex();
+
+    var appPaths = new AppPaths(Path.Combine(root, "home"));
+    appPaths.Ensure();
+    var service = new AppService(appPaths);
+    var (packG, _) = service.BuildRules(game, "GGPK Experimental Loop", "test");
+
+    ApplyRequest Request(bool includeExperimental) => new()
+    {
+        Game = game,
+        Pack = packG,
+        Preset = "safe",
+        Ignore = IgnoreList.Default(),
+        IncludeExperimental = includeExperimental,
+        Force = true
+    };
+
+    static byte[] LiveBytes(IndexSession session, string path)
+    {
+        session.TryGetFile(path, out var record);
+        return record!.Read().ToArray();
+    }
+
+    var off = service.Apply(Request(false));
+    Check("ggpk-exp: unticked writes only the .ao",
+        off.Plan.Changes.Count == 1 && off.Plan.SkippedExperimental.Count == 2);
+    using (var read = IndexSession.OpenReadOnly(game))
+    {
+        Check("ggpk-exp: .pet untouched while unticked", LiveBytes(read, petPath).SequenceEqual(pet));
+        Check("ggpk-exp: .mat untouched while unticked", LiveBytes(read, matPath).SequenceEqual(mat));
+    }
+
+    var on = service.Apply(Request(true));
+    Check("ggpk-exp: ticked blanks both rules",
+        on.Plan.Changes.Count == 3 && on.Plan.SkippedExperimental.Count == 0);
+    Check("ggpk-exp: write journal cleared", !File.Exists(ggpkPath + ".psjournal"));
+    using (var read = IndexSession.OpenReadOnly(game))
+    {
+        Check("ggpk-exp: .pet blanked inside the container", LiveBytes(read, petPath).Length == 0);
+        Check("ggpk-exp: .mat blanked inside the container", LiveBytes(read, matPath).Length == 0);
+        Check("ggpk-exp: .ao stripped inside the container",
+            !Encoding.UTF8.GetString(LiveBytes(read, aoPath)).Contains("AddAttached"));
+    }
+    var appliedStatus = service.GetStatus(game);
+    Check("ggpk-exp: status modified", appliedStatus.IsModified);
+    Check("ggpk-exp: custom bundles inside the container", appliedStatus.CustomBundlesExist);
+    Check("ggpk-exp: backup of the in-container index recorded", appliedStatus.BackupExists);
+
+    var restore = service.Restore(new RestoreRequest { Game = game });
+    Check("ggpk-exp: restore reports index restored", restore.RestoredIndex);
+    Check("ggpk-exp: container index back to original bytes",
+        store.HashIndex().Equals(originalHash, StringComparison.OrdinalIgnoreCase));
+    Check("ggpk-exp: custom bundles removed", !store.HasCustomBundles());
+    Check("ggpk-exp: state removed", StateStore.Load(appPaths) == null);
+    using (var read = IndexSession.OpenReadOnly(game))
+    {
+        Check("ggpk-exp: .pet bytes back", LiveBytes(read, petPath).SequenceEqual(pet));
+        Check("ggpk-exp: .mat bytes back", LiveBytes(read, matPath).SequenceEqual(mat));
+        Check("ggpk-exp: .ao content back", Encoding.UTF8.GetString(LiveBytes(read, aoPath)) == originalAo);
+    }
+    Check("ggpk-exp: status original", !service.GetStatus(game).IsModified);
 }
 
 Console.WriteLine();
