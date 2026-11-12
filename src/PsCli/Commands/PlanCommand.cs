@@ -49,7 +49,7 @@ internal static class PlanCommand
             return 0;
         }
 
-        Console.WriteLine($"game       : {game.IndexPath}");
+        Console.WriteLine($"game       : {game.TargetPath}");
         Console.WriteLine($"pack       : {pack.Name}");
         Console.WriteLine($"preset     : {request.Preset}");
         Console.WriteLine($"files      : {plan.Changes.Count}");

@@ -16,7 +16,7 @@ internal static class Cli
     private static readonly HashSet<string> ValueOptions = new(StringComparer.Ordinal)
     {
         "index", "bundles", "filter", "limit", "out", "game-path", "backup-dir", "backup",
-        "path", "content", "game", "pack", "preset", "ignore", "name", "build",
+        "path", "content", "game", "ggpk", "pack", "preset", "ignore", "name", "build",
         "language", "profile", "categories", "action", "entry", "index-url"
     };
 
@@ -73,8 +73,18 @@ internal static class Cli
         {
             Console.Error.WriteLine("error: native Oodle library not found.");
             Console.Error.WriteLine($"       {ex.Message}");
-            Console.Error.WriteLine("       Linux: put liboo2core.so next to the pscli executable, or set LD_LIBRARY_PATH.");
+            Console.Error.WriteLine(OperatingSystem.IsWindows()
+                ? "       Windows: put oo2core.dll next to pscli.exe."
+                : "       Linux: put liboo2core.so next to the pscli executable, or set LD_LIBRARY_PATH.");
             return 2;
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            Console.Error.WriteLine($"error: access denied while writing the game files: {ex.Message}");
+            Console.Error.WriteLine(OperatingSystem.IsWindows()
+                ? "       Right-click the terminal (or pscli.exe) and run it as administrator."
+                : "       Check the file permissions of the game directory.");
+            return 1;
         }
         catch (Exception ex)
         {
@@ -101,7 +111,7 @@ internal static class Cli
     private static void PrintHelp()
     {
         Console.WriteLine($"""
-pscli {BuildInfo.Version} - PoE2 SteamOS patcher
+pscli {BuildInfo.Version} - PoE2 client patcher (SteamOS / Windows, Steam or standalone)
 
 Usage:
   pscli detect      [--json]
@@ -109,12 +119,12 @@ Usage:
   pscli peek        --index <Bundles2/_.index.bin>
   pscli dump-paths  --index <Bundles2/_.index.bin> --out <file.txt> [--filter <prefix>]
   pscli read-file   --index <Bundles2/_.index.bin> --path <metadata/path> [--out <file>] [--text]
-  pscli build-rules --index <Bundles2/_.index.bin> [--out <pack.json>] [--name <name>] [--build <build>]
+  pscli build-rules [--index <...>|--game <root>|--ggpk <file>] [--out <pack.json>] [--name <name>] [--build <build>]
   pscli list-rules  [--pack <pack.json>] [--language zh|en] [--json]
-  pscli plan        [--index <...>|--game <root>] [--pack <pack.json>] --preset safe|clean|performance|full [--profile <name>] [--categories a,b] [--json] [--out <plan.json>]
-  pscli apply       [--index <...>|--game <root>] [--pack <pack.json>] --preset safe|clean|performance|full [--profile <name>] [--categories a,b] [--yes] [--dry-run] [--force] [--include-experimental]
-  pscli status      [--index <...>|--game <root>] [--json]
-  pscli restore     [--index <...>|--game <root>] [--backup <file>|--index-url <url>] [--clean-only] [--force] [--yes]
+  pscli plan        [--index <...>|--game <root>|--ggpk <file>] [--pack <pack.json>] --preset safe|clean|performance|full [--profile <name>] [--categories a,b] [--json] [--out <plan.json>]
+  pscli apply       [--index <...>|--game <root>|--ggpk <file>] [--pack <pack.json>] --preset safe|clean|performance|full [--profile <name>] [--categories a,b] [--yes] [--dry-run] [--force] [--include-experimental]
+  pscli status      [--index <...>|--game <root>|--ggpk <file>] [--json]
+  pscli restore     [--index <...>|--game <root>|--ggpk <file>] [--backup <file>|--index-url <url>] [--clean-only] [--force] [--yes]
                     default is a safe per-file restore after a game update (changed files are kept); --force restores the whole backup
   pscli profiles    --action list|show|save|delete [--name <name>] [--preset ...] [--categories ...] [--ignore <file>]
   pscli backups     [--prune]
@@ -124,7 +134,8 @@ Usage:
 
 Common options:
   --index <file>      Bundles2/_.index.bin
-  --game <dir>        PoE2 game root (contains Bundles2)
+  --game <dir>        PoE2 game root (contains Bundles2 or Content.ggpk)
+  --ggpk <file>       Standalone client Content.ggpk (experimental, writes in place)
   --pack <file>       Rule pack JSON (default: app data rulepacks/default.json)
   --preset <name>     safe (default), clean, performance, full
   --profile <name>    Load preset/categories/ignore from a saved profile
@@ -135,6 +146,9 @@ Common options:
   --force             Continue despite game running / changed index / existing custom bundles
   --include-experimental  Include .pet/.epk/.mat/.fxgraph rules
   --json              JSON output
+
+Windows: a game installed under Program Files needs an elevated terminal for apply/restore.
+Steam and standalone installs are detected automatically; set POE2_INDEX, POE2_ROOT or POE2_GGPK to override.
 
 M0 diagnostics:
   inspect/peek/dump-paths/self-test/fixture operate directly on an index and do not use the rule pack.

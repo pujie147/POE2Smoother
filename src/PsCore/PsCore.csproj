@@ -9,4 +9,9 @@
     <ProjectReference Include="../PsRules/PsRules.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- the test harness exercises injectable locator seams (fake Steam roots, no registry) -->
+    <InternalsVisibleTo Include="pstests" />
+  </ItemGroup>
+
 </Project>

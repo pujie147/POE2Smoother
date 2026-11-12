@@ -16,8 +16,11 @@ internal static class StatusCommand
         {
             Console.WriteLine(JsonSerializer.Serialize(new
             {
+                kind = status.Game.Kind.ToString(),
                 gameRoot = status.Game.GameRoot,
+                targetPath = status.Game.TargetPath,
                 indexPath = status.Game.IndexPath,
+                ggpkPath = status.Game.GgpkPath,
                 currentHash = status.CurrentIndexSha256,
                 modified = status.IsModified,
                 gameUpdated = status.GameUpdated,
@@ -28,8 +31,9 @@ internal static class StatusCommand
             return 0;
         }
 
+        Console.WriteLine($"kind          : {status.Game.Kind}");
         Console.WriteLine($"game          : {status.Game.GameRoot}");
-        Console.WriteLine($"index         : {status.Game.IndexPath}");
+        Console.WriteLine($"target        : {status.Game.TargetPath}");
         Console.WriteLine($"index sha256  : {status.CurrentIndexSha256}");
         Console.WriteLine($"modified      : {status.IsModified}");
         Console.WriteLine($"game updated  : {status.GameUpdated}");

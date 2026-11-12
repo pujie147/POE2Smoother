@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Media;
+using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using PsCore;
 using PsRules;
@@ -76,21 +77,20 @@ public partial class MainWindow : Window
         SetBusy(true, "检测中… / Detecting…");
         try
         {
-            var candidates = await Task.Run(SteamLibraryLocator.FindCandidates);
-            _game = candidates.FirstOrDefault(c => c.IsSteamBundles);
+            var candidates = await Task.Run(GameLocator.FindCandidates);
+            _game = candidates.FirstOrDefault(c => c.IsSteamBundles) ?? candidates.FirstOrDefault();
 
             if (_game == null)
             {
                 GamePathBox.Text = "";
-                StatusText.Text = "未找到 PoE2 Steam 客户端。 / PoE2 Steam client not found.";
-                AppendLog("No PoE2 Steam client found. Check the Steam library or set POE2_INDEX.");
+                KindText.Text = "";
+                StatusText.Text = "未找到 PoE2 客户端（Steam 版 / 独立客户端）。 / No PoE2 client found (Steam or standalone).";
+                AppendLog("No PoE2 client found. Use 浏览/Browse to pick Bundles2/_.index.bin or Content.ggpk, " +
+                          "or set POE2_INDEX / POE2_GGPK.");
                 return;
             }
 
-            GamePathBox.Text = _game.IndexPath;
-            _settings.LastIndexPath = _game.IndexPath;
-            SaveSettings();
-            AppendLog($"Detected: {_game.IndexPath}");
+            ShowDetectedGame();
 
             if (File.Exists(_paths.DefaultRulePackPath))
                 LoadPack(_paths.DefaultRulePackPath);
@@ -107,6 +107,130 @@ public partial class MainWindow : Window
             SetBusy(false, null);
             RefreshStatus();
         }
+    }
+
+    private void ShowDetectedGame()
+    {
+        if (_game == null)
+            return;
+
+        GamePathBox.Text = _game.TargetPath;
+        _settings.LastTargetPath = _game.TargetPath;
+        SaveSettings();
+        UpdateKindText();
+        AppendLog($"Detected [{_game.KindLabel}]: {_game.TargetPath}");
+    }
+
+    private static string GetKindLabel(GameLocation game)
+        => game.IsGgpk ? "独立客户端 / standalone" : "Steam";
+
+    private void UpdateKindText()
+    {
+        if (_game == null)
+        {
+            KindText.Text = "";
+            return;
+        }
+
+        KindText.Text = _game.IsGgpk
+            ? "类型 / Type: 独立客户端 Content.ggpk（实验性：写入不可原子回滚，过程中不要结束进程） / " +
+              "standalone Content.ggpk (experimental: writes are not atomic — do not kill the process)"
+            : "类型 / Type: Steam · Bundles2/_.index.bin";
+    }
+
+    private async void OnBrowse(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            {
+                Title = "选择 Bundles2/_.index.bin 或 Content.ggpk / Pick Bundles2/_.index.bin or Content.ggpk",
+                AllowMultiple = false,
+                FileTypeFilter =
+                [
+                    new FilePickerFileType("PoE2 data file") { Patterns = ["*.bin", "*.ggpk"] },
+                    FilePickerFileTypes.All
+                ]
+            });
+
+            if (files.Count == 0)
+                return;
+
+            var path = files[0].TryGetLocalPath();
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                SetStatus("无法解析所选路径 / could not resolve the selected path", warn: true);
+                return;
+            }
+
+            UseManualTarget(path);
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"选择失败 / Selection failed: {ex.Message}", warn: true);
+            AppendLog(ex.ToString());
+        }
+    }
+
+    private void UseManualTarget(string path)
+    {
+        GameLocation location;
+        try
+        {
+            location = GameLocator.FromManualPath(path);
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"路径不可用 / unsupported path: {ex.Message}", warn: true);
+            return;
+        }
+
+        _game = location;
+        _pack = null;
+        ShowDetectedGame();
+        SetStatus($"已选择 / selected: {location.KindLabel} · {location.TargetPath}");
+        RefreshStatus();
+    }
+
+    private void OnElevate(object? sender, RoutedEventArgs e)
+    {
+        SaveSettings();
+        if (Elevation.TryRelaunchElevated(out var error))
+        {
+            Close();
+            return;
+        }
+
+        SetStatus($"无法提权 / cannot elevate: {error}", warn: true);
+    }
+
+    private static bool IsAccessDenied(Exception ex)
+    {
+        for (Exception? current = ex; current != null; current = current.InnerException)
+        {
+            if (current is UnauthorizedAccessException)
+                return true;
+        }
+
+        return false;
+    }
+
+    private void ShowElevationHint()
+    {
+        if (Elevation.CanRelaunch)
+        {
+            ElevateButton.IsVisible = true;
+            SetStatus("写入游戏目录被拒绝：需要管理员权限，请点右上角“以管理员身份重启”。 / " +
+                      "Access denied — administrator rights are needed. Use “Run as admin”.", warn: true);
+        }
+        else
+        {
+            SetStatus("写入游戏目录被拒绝：请以管理员身份重新启动本工具。 / " +
+                      "Access denied — restart this tool as administrator.", warn: true);
+        }
+
+        AppendLog("Access denied while writing the game directory " +
+                  "(a Steam/standalone install under Program Files needs elevation).");
     }
 
     private async Task BuildRulesAsync()
@@ -137,7 +261,15 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            StatusText.Text = $"生成规则包失败 / Build failed: {ex.Message}";
+            if (IsAccessDenied(ex))
+            {
+                ShowElevationHint();
+            }
+            else
+            {
+                StatusText.Text = $"生成规则包失败 / Build failed: {ex.Message}";
+            }
+
             AppendLog(ex.ToString());
         }
         finally
@@ -410,7 +542,15 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            StatusText.Text = $"应用失败 / Apply failed: {ex.Message}";
+            if (IsAccessDenied(ex))
+            {
+                ShowElevationHint();
+            }
+            else
+            {
+                StatusText.Text = $"应用失败 / Apply failed: {ex.Message}";
+            }
+
             AppendLog(ex.ToString());
         }
         finally
@@ -457,7 +597,15 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            StatusText.Text = $"还原失败 / Restore failed: {ex.Message}";
+            if (IsAccessDenied(ex))
+            {
+                ShowElevationHint();
+            }
+            else
+            {
+                StatusText.Text = $"还原失败 / Restore failed: {ex.Message}";
+            }
+
             AppendLog(ex.ToString());
         }
         finally
@@ -634,7 +782,7 @@ public partial class MainWindow : Window
         var status = _service.GetStatus(_game);
         var lines = new List<string>
         {
-            $"游戏 / Game: {status.Game.GameRoot}",
+            $"游戏 / Game: {GetKindLabel(status.Game)} · {status.Game.TargetPath}",
             $"状态 / State: {(status.IsModified ? "已应用 / modified" : "原始 / original")}",
             $"游戏更新 / Game updated: {(status.GameUpdated ? "是 / yes" : "否 / no")}",
             $"自定义 bundle / Custom bundles: {(status.CustomBundlesExist ? "存在 / present" : "无 / none")}",
@@ -695,7 +843,7 @@ public partial class MainWindow : Window
         _settings.Language = LanguageBox.SelectedItem as string ?? _settings.Language;
         _settings.IncludeExperimental = ExperimentalBox.IsChecked == true;
         if (_game != null)
-            _settings.LastIndexPath = _game.IndexPath;
+            _settings.LastTargetPath = _game.TargetPath;
         SettingsStore.Save(_paths, _settings);
     }
 }

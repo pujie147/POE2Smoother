@@ -125,11 +125,22 @@ jobs:
       - name: Build AppImage
         run: bash scripts/build-appimage.sh --no-publish
 
-      - name: Collect checksum
+      - name: Build Windows ZIPs
+        run: |
+          # Cross-published from this runner: Directory.Build.props selects the vendored
+          # natives by RID, and the test gate above already guards that selection so a
+          # win-x64 build can never silently embed the linux-x64 DLLs.
+          pwsh -NoProfile -File scripts/build-windows.ps1
+
+      - name: Collect checksums
         id: sum
         run: |
           test -f dist/PoE2Smoother-x86_64.AppImage
+          test -f dist/PoE2Smoother-win-x64.zip
+          test -f dist/pscli-win-x64.zip
           echo "sha256=$(sha256sum dist/PoE2Smoother-x86_64.AppImage | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "sha256_win=$(sha256sum dist/PoE2Smoother-win-x64.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "sha256_cli=$(sha256sum dist/pscli-win-x64.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Write release notes
         run: |
@@ -158,6 +169,14 @@ jobs:
             printf 'SteamOS 缺少 FUSE2 时用解包模式运行 / if FUSE2 is missing, run extracted:\n\n'
             printf '```bash\nAPPIMAGE_EXTRACT_AND_RUN=1 ./PoE2Smoother-x86_64.AppImage\n```\n\n'
             printf 'SHA-256: `%s`\n\n' '${{ steps.sum.outputs.sha256 }}'
+            printf '### Windows (x64)\n\n'
+            printf '便携版 / portable ZIP — 解压后运行 `poe2smoother.exe`:\n\n'
+            printf '```powershell\nExpand-Archive .\\PoE2Smoother-win-x64.zip .\n.\\PoE2Smoother\\poe2smoother.exe\n```\n\n'
+            printf '命令行版 / CLI:\n\n'
+            printf '```powershell\nExpand-Archive .\\pscli-win-x64.zip .\n.\\pscli\\pscli.exe detect\n```\n\n'
+            printf '首次运行被 SmartScreen 拦截时选「更多信息 → 仍要运行」；游戏装在 Program Files 下时，应用/还原需要以管理员身份运行（界面上会提示）。\n'
+            printf 'If SmartScreen blocks the first run, choose “More info → Run anyway”. Applying/restoring needs administrator rights when the game lives under Program Files (the UI offers a one-click relaunch).\n\n'
+            printf 'SHA-256: `%s` (GUI) · `%s` (CLI)\n\n' '${{ steps.sum.outputs.sha256_win }}' '${{ steps.sum.outputs.sha256_cli }}'
             printf '%s\n\n' '---'
             printf '%s\n' "$CHANGES"
           } > notes.md
@@ -179,6 +198,7 @@ jobs:
                 --notes-file notes.md
             fi
             gh release upload "$TAG" dist/PoE2Smoother-x86_64.AppImage --clobber
+            gh release upload "$TAG" dist/PoE2Smoother-win-x64.zip dist/pscli-win-x64.zip --clobber
             # --prerelease= accepts the resolve step's true/false directly; writing it as a
             # bare flag through a ternary would leave a dangling line continuation.
             gh release edit "$TAG" \
@@ -199,11 +219,14 @@ jobs:
             | sed -e 's/%/%25/g' -e 's/^/::error::/'
           exit 1
 
-      - name: Upload built AppImage on failure
+      - name: Upload build artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: appimage-${{ steps.ver.outputs.tag }}
-          path: dist/PoE2Smoother-x86_64.AppImage
+          name: release-${{ steps.ver.outputs.tag }}
+          path: |
+            dist/PoE2Smoother-x86_64.AppImage
+            dist/PoE2Smoother-win-x64.zip
+            dist/pscli-win-x64.zip
           retention-days: 7
           if-no-files-found: ignore

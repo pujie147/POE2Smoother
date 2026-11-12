@@ -9,6 +9,17 @@ TESTS="$ROOT/tests/PsTests/bin/Release/net8.0/pstests.dll"
 echo "== build =="
 dotnet build "$ROOT/PoE2Smoother.sln" -c Release
 
+# Cross-publish must pick the matching vendored natives: a win-x64 publish built on a Linux
+# host used to fall through to the host-OS condition and ship the linux-x64 DLLs.
+echo "== vendor native dir (RID selection) =="
+for rid in win-x64 linux-x64; do
+  dir="$(dotnet msbuild "$ROOT/src/PsCore/PsCore.csproj" -getProperty:LibGGPK3Dir -p:RuntimeIdentifier="$rid" -nologo | tr -d '\r')"
+  if [ "${dir##*/}" != "$rid" ]; then
+    echo "RID selection broken: RuntimeIdentifier=$rid resolved to '$dir'"
+    exit 1
+  fi
+done
+
 echo "== unit/integration tests =="
 dotnet "$TESTS"
 

@@ -76,22 +76,24 @@ public sealed class AppService
 
     public PatchPlan BuildPlan(ApplyRequest request)
     {
-        using var session = IndexSession.OpenReadOnly(request.Game.IndexPath, request.Game.BundlesDir);
+        using var session = IndexSession.OpenReadOnly(request.Game);
         return BuildPlan(session, request);
     }
 
     public ApplyResult Apply(ApplyRequest request, IProgress<PatchProgress>? progress = null)
     {
-        if (!File.Exists(request.Game.IndexPath))
-            throw new FileNotFoundException("PoE2 index not found", request.Game.IndexPath);
+        var store = TargetStore.For(request.Game);
+
+        if (!store.Exists())
+            throw new FileNotFoundException("PoE2 data file not found", store.TargetPath);
 
         if (GameProcessGuard.IsGameRunning(out var processes) && !request.Force)
             throw new InvalidOperationException(
                 $"PoE2 appears to be running ({string.Join(", ", processes)}). Close the game first.");
 
         _paths.Ensure();
-        var state = StateStore.Load(_paths);
-        var currentHash = HashUtil.Sha256File(request.Game.IndexPath);
+        var state = LoadMatchingState(request.Game);
+        var currentHash = store.HashIndex();
 
         // Return to a known baseline before rebuilding the patch.
         if (state != null)
@@ -101,9 +103,9 @@ public sealed class AppService
                 if (!File.Exists(state.BackupPath))
                     throw new FileNotFoundException("Backup of the applied state is missing", state.BackupPath);
 
-                BackupManager.RestoreBackup(state.BackupPath, request.Game.IndexPath);
-                BackupManager.DeleteCustomBundles(request.Game.BundlesDir);
-                currentHash = HashUtil.Sha256File(request.Game.IndexPath);
+                store.RestoreBackup(state.BackupPath);
+                store.DeleteCustomBundles();
+                currentHash = store.HashIndex();
                 StateStore.Delete(_paths);
                 state = null;
                 AppLog.Info(_paths, "Restored original index from state before applying a new plan.");
@@ -111,30 +113,30 @@ public sealed class AppService
             else if (!currentHash.Equals(state.OriginalIndexSha256, StringComparison.OrdinalIgnoreCase))
             {
                 // The game was updated (or the index was changed by another tool).
-                if (BackupManager.HasCustomBundles(request.Game.BundlesDir) && !request.Force)
+                if (store.HasCustomBundles() && !request.Force)
                     throw new InvalidOperationException(
                         "Index changed since the last apply (game update?) and custom bundles still exist. " +
                         "Use --force to discard the old state and continue.");
 
                 StateStore.Delete(_paths);
-                BackupManager.DeleteCustomBundles(request.Game.BundlesDir);
+                store.DeleteCustomBundles();
                 state = null;
                 AppLog.Warn(_paths, "Index changed since last apply; old state discarded.");
             }
             else
             {
-                BackupManager.DeleteCustomBundles(request.Game.BundlesDir);
+                store.DeleteCustomBundles();
                 StateStore.Delete(_paths);
                 state = null;
             }
         }
-        else if (BackupManager.HasCustomBundles(request.Game.BundlesDir))
+        else if (store.HasCustomBundles())
         {
             if (!request.Force)
                 throw new InvalidOperationException(
                     "LibGGPK3 custom bundles exist but there is no state file. " +
                     "Restore/clean them first, or use --force to discard them.");
-            BackupManager.DeleteCustomBundles(request.Game.BundlesDir);
+            store.DeleteCustomBundles();
         }
 
         var plan = BuildPlan(request);
@@ -149,14 +151,27 @@ public sealed class AppService
             };
         }
 
-        var backupPath = BackupManager.CreateBackup(request.Game.IndexPath, _paths.BackupsDir);
+        string backupPath;
+        try
+        {
+            store.EnsureWritable(plan.TotalBytes, request.Force);
+            backupPath = store.CreateBackup(_paths.BackupsDir);
+        }
+        catch
+        {
+            // Never leave the standalone write marker behind on a pre-flight failure: the next
+            // apply would then refuse to run until --force.
+            store.ClearWriteMarker();
+            throw;
+        }
+
         AppLog.Info(_paths, $"Backup created: {backupPath}");
 
         var committed = false;
         var patchedFiles = new List<PatchedFileEntry>();
         try
         {
-            using (var work = IndexSession.OpenWorkCopy(request.Game.IndexPath, request.Game.BundlesDir))
+            using (var work = IndexSession.OpenWorkCopy(request.Game))
             {
                 var total = plan.Changes.Count;
                 var reportStep = Math.Max(1, total / 100);
@@ -201,11 +216,13 @@ public sealed class AppService
                 committed = true;
             }
 
-            var appliedHash = HashUtil.Sha256File(request.Game.IndexPath);
+            var appliedHash = store.HashIndex();
             var newState = new AppState
             {
                 GameRoot = request.Game.GameRoot,
                 IndexPath = request.Game.IndexPath,
+                TargetPath = store.TargetPath,
+                TargetKind = request.Game.Kind.ToString(),
                 OriginalIndexSha256 = currentHash,
                 AppliedIndexSha256 = appliedHash,
                 BackupPath = backupPath,
@@ -213,10 +230,11 @@ public sealed class AppService
                 RulePackPath = request.RulePackPath,
                 Preset = request.Preset,
                 FileCount = plan.Changes.Count,
-                CustomBundleFiles = BackupManager.ListCustomBundleFiles(request.Game.BundlesDir).ToList(),
+                CustomBundleFiles = store.ListCustomBundles().ToList(),
                 PatchedFiles = patchedFiles
             };
             StateStore.Save(_paths, newState);
+            store.ClearWriteMarker();
             BackupManager.Prune(_paths.BackupsDir, 10);
             AppLog.Info(_paths,
                 $"Applied {plan.Changes.Count} changes (preset={request.Preset}, pack={request.Pack.Name}).");
@@ -231,12 +249,21 @@ public sealed class AppService
         }
         catch
         {
-            BackupManager.DeleteCustomBundles(request.Game.BundlesDir);
+            try
+            {
+                store.DeleteCustomBundles();
+            }
+            catch (Exception cleanupEx)
+            {
+                // A locked or damaged container must not hide the real failure.
+                AppLog.Warn(_paths, $"Apply cleanup failed: {cleanupEx.Message}");
+            }
+
             if (committed)
             {
                 try
                 {
-                    BackupManager.RestoreBackup(backupPath, request.Game.IndexPath);
+                    store.RestoreBackup(backupPath);
                     AppLog.Warn(_paths, "Apply failed after commit; backup restored.");
                 }
                 catch (Exception restoreEx)
@@ -244,6 +271,8 @@ public sealed class AppService
                     AppLog.Error(_paths, $"Apply rollback failed: {restoreEx}");
                 }
             }
+
+            store.ClearWriteMarker();
             throw;
         }
     }
@@ -254,21 +283,27 @@ public sealed class AppService
             throw new InvalidOperationException(
                 $"PoE2 appears to be running ({string.Join(", ", processes)}). Close the game first.");
 
-        var state = StateStore.Load(_paths);
-        var currentHash = File.Exists(request.Game.IndexPath)
-            ? HashUtil.Sha256File(request.Game.IndexPath)
-            : "";
+        var store = TargetStore.For(request.Game);
+        var state = LoadMatchingState(request.Game);
+        var currentHash = store.Exists() ? store.HashIndex() : "";
 
         string? backup = request.BackupPath ?? state?.BackupPath;
         if (!string.IsNullOrWhiteSpace(request.IndexUrl))
+        {
+            if (request.Game.IsGgpk)
+                throw new InvalidOperationException(
+                    "--index-url downloads a Bundles2/_.index.bin and only works for the Steam client.");
+
             backup = DownloadIndex(request.IndexUrl, request.Game.BundlesDir);
+        }
+
         var cleaned = false;
 
         if (request.CleanOnly)
         {
-            if (BackupManager.HasCustomBundles(request.Game.BundlesDir))
+            if (store.HasCustomBundles())
             {
-                BackupManager.DeleteCustomBundles(request.Game.BundlesDir);
+                store.DeleteCustomBundles();
                 cleaned = true;
             }
             StateStore.Delete(_paths);
@@ -288,17 +323,9 @@ public sealed class AppService
             string.IsNullOrWhiteSpace(request.BackupPath) &&
             string.IsNullOrWhiteSpace(request.IndexUrl) &&
             !currentHash.Equals(state.AppliedIndexSha256, StringComparison.OrdinalIgnoreCase) &&
-            File.Exists(request.Game.IndexPath))
+            store.Exists())
         {
-            return RestorePerFile(state, request.Game);
-        }
-
-        // Whole-index paths below: the backup replaces the index entirely, so custom bundles
-        // are always orphans from that moment on and can go first.
-        if (BackupManager.HasCustomBundles(request.Game.BundlesDir))
-        {
-            BackupManager.DeleteCustomBundles(request.Game.BundlesDir);
-            cleaned = true;
+            return RestorePerFile(state, request.Game, store);
         }
 
         if (string.IsNullOrWhiteSpace(backup))
@@ -320,6 +347,13 @@ public sealed class AppService
 
         if (currentHash.Equals(backupHash, StringComparison.OrdinalIgnoreCase))
         {
+            // Custom bundles are already orphans once the index matches the backup bytes.
+            if (store.HasCustomBundles())
+            {
+                store.DeleteCustomBundles();
+                cleaned = true;
+            }
+
             StateStore.Delete(_paths);
             return new RestoreResult
             {
@@ -329,7 +363,16 @@ public sealed class AppService
             };
         }
 
-        BackupManager.RestoreBackup(backup, request.Game.IndexPath);
+        // Index first, bundles second: if the write fails halfway, the live index still points at
+        // bundles that exist. Doing it the other way round would leave dangling references.
+        store.RestoreBackup(backup);
+
+        if (store.HasCustomBundles())
+        {
+            store.DeleteCustomBundles();
+            cleaned = true;
+        }
+
         StateStore.Delete(_paths);
         AppLog.Info(_paths, $"Restored index from backup: {backup}");
 
@@ -337,7 +380,7 @@ public sealed class AppService
         {
             RestoredIndex = true,
             CleanedCustomBundles = cleaned,
-            Message = $"Restored {request.Game.IndexPath}"
+            Message = $"Restored {store.TargetPath}"
         };
     }
 
@@ -348,13 +391,13 @@ public sealed class AppService
     /// dropped afterwards). Files whose content no longer matches (game update, external edit)
     /// are skipped and keep their current content — that is what prevents post-update downgrades.
     /// </summary>
-    private RestoreResult RestorePerFile(AppState state, GameLocation game)
+    private RestoreResult RestorePerFile(AppState state, GameLocation game, TargetStore store)
     {
         var restored = 0;
         var skipped = new List<string>();
         var unresolved = new List<PatchedFileEntry>();
 
-        using (var work = IndexSession.OpenWorkCopy(game.IndexPath, game.BundlesDir))
+        using (var work = IndexSession.OpenWorkCopy(game))
         {
             // Redirect targets reference official bundles by path; an update may have renamed or
             // removed them, so resolve against the live index's bundle table.
@@ -415,8 +458,10 @@ public sealed class AppService
 
         // Drop only the custom bundles no live record references anymore; bundles still backing a
         // kept-suppressed file or an edit made by another tool stay on disk.
+        // Inside a GGPK the index Save above already deleted every emptied custom bundle, so there
+        // is nothing to sweep there.
         var cleanedBundles = false;
-        if (BackupManager.HasCustomBundles(game.BundlesDir))
+        if (!game.IsGgpk && store.HasCustomBundles())
         {
             var deleted = RemoveOrphanCustomBundles(game);
             cleanedBundles = deleted > 0;
@@ -438,6 +483,8 @@ public sealed class AppService
                 SchemaVersion = state.SchemaVersion,
                 GameRoot = state.GameRoot,
                 IndexPath = state.IndexPath,
+                TargetPath = state.TargetPath,
+                TargetKind = state.TargetKind,
                 OriginalIndexSha256 = state.OriginalIndexSha256,
                 AppliedIndexSha256 = state.AppliedIndexSha256,
                 BackupPath = state.BackupPath,
@@ -446,7 +493,7 @@ public sealed class AppService
                 Preset = state.Preset,
                 AppliedAt = state.AppliedAt,
                 FileCount = unresolved.Count,
-                CustomBundleFiles = BackupManager.ListCustomBundleFiles(game.BundlesDir).ToList(),
+                CustomBundleFiles = store.ListCustomBundles().ToList(),
                 PatchedFiles = unresolved
             });
             AppLog.Warn(_paths,
@@ -479,7 +526,7 @@ public sealed class AppService
     private int RemoveOrphanCustomBundles(GameLocation game)
     {
         var referenced = new List<string?>();
-        using (var read = IndexSession.OpenReadOnly(game.IndexPath, game.BundlesDir))
+        using (var read = IndexSession.OpenReadOnly(game))
         {
             foreach (var file in read.Index.Files.Values)
                 referenced.Add(file.BundleRecord?.Path);
@@ -528,8 +575,9 @@ public sealed class AppService
 
     public StatusResult GetStatus(GameLocation game)
     {
-        var state = StateStore.Load(_paths);
-        var currentHash = File.Exists(game.IndexPath) ? HashUtil.Sha256File(game.IndexPath) : "";
+        var store = TargetStore.For(game);
+        var state = LoadMatchingState(game);
+        var currentHash = store.Exists() ? store.HashIndex() : "";
         var isModified = state != null &&
                          currentHash.Equals(state.AppliedIndexSha256, StringComparison.OrdinalIgnoreCase);
         var updated = state != null &&
@@ -543,14 +591,33 @@ public sealed class AppService
             State = state,
             IsModified = isModified,
             GameUpdated = updated,
-            CustomBundlesExist = BackupManager.HasCustomBundles(game.BundlesDir),
+            CustomBundlesExist = store.Exists() && store.HasCustomBundles(),
             BackupExists = state != null && File.Exists(state.BackupPath)
         };
     }
 
+    /// <summary>
+    /// The persisted state only describes the install it was written for. A state file from a
+    /// different target is ignored rather than applied to the wrong game files.
+    /// </summary>
+    private AppState? LoadMatchingState(GameLocation game)
+    {
+        var state = StateStore.Load(_paths);
+        if (state == null)
+            return null;
+
+        if (state.MatchesTarget(game))
+            return state;
+
+        AppLog.Warn(_paths,
+            $"Ignoring state for a different target ({state.TargetKind} {state.TargetPath}) while working on " +
+            $"{game.Kind} {game.TargetPath}.");
+        return null;
+    }
+
     public (RulePack Pack, RulePackBuildStats Stats) BuildRules(GameLocation game, string name, string clientBuild)
     {
-        using var session = IndexSession.OpenReadOnly(game.IndexPath, game.BundlesDir);
+        using var session = IndexSession.OpenReadOnly(game);
         var paths = session.RuleCandidateFiles().Select(f => f.Path!);
         return RulePackBuilder.Build(paths, name, clientBuild);
     }

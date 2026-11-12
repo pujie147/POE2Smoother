@@ -278,6 +278,41 @@ if (images.Count != 1)
 if (images[0].Source == null)
     throw new Exception("sponsor QR did not load from avares://");
 
+// ---------------------------------------------------------------------------
+// Windows / standalone support: browse button, elevate button, target kind line
+// ---------------------------------------------------------------------------
+var browseButton = window.FindControl<Button>("BrowseButton") ?? throw new Exception("BrowseButton missing");
+var elevateButton = window.FindControl<Button>("ElevateButton") ?? throw new Exception("ElevateButton missing");
+var kindText = window.FindControl<TextBlock>("KindText") ?? throw new Exception("KindText missing");
+if (elevateButton.IsVisible)
+    throw new Exception("elevate button must stay hidden until a write is denied");
+if (browseButton.Content?.ToString()?.Contains("Browse") != true)
+    throw new Exception($"browse button label: {browseButton.Content}");
+
+var updateKind = typeof(MainWindow).GetMethod("UpdateKindText",
+    BindingFlags.Instance | BindingFlags.NonPublic) ?? throw new Exception("UpdateKindText not found");
+
+gameField.SetValue(window, new PsCore.GameLocation(
+    Path.Combine(home, "standalone"),
+    "",
+    "",
+    null,
+    PsCore.GameLocationKind.StandaloneGgpk,
+    Path.Combine(home, "standalone", "Content.ggpk")));
+updateKind.Invoke(window, null);
+Dispatcher.UIThread.RunJobs();
+if (kindText.Text?.Contains("实验性") != true || kindText.Text?.Contains("Content.ggpk") != true)
+    throw new Exception($"standalone kind hint missing: {kindText.Text}");
+
+gameField.SetValue(window, new PsCore.GameLocation(
+    Path.Combine(home, "fakegame"),
+    Path.Combine(home, "fakegame", "Bundles2"),
+    Path.Combine(home, "fakegame", "Bundles2", "_.index.bin")));
+updateKind.Invoke(window, null);
+Dispatcher.UIThread.RunJobs();
+if (kindText.Text?.Contains("Steam") != true)
+    throw new Exception($"steam kind hint missing: {kindText.Text}");
+
 window.Show();
 Dispatcher.UIThread.RunJobs();
 Console.WriteLine("GUI headless smoke test passed.");

@@ -35,7 +35,7 @@ internal static class BuildRulesCommand
             return 0;
         }
 
-        Console.WriteLine($"index      : {game.IndexPath}");
+        Console.WriteLine($"target     : {game.TargetPath}");
         Console.WriteLine($"scanned    : {stats.PathsScanned}");
         Console.WriteLine($"rules      : {stats.Rules}");
         Console.WriteLine($"categories : {stats.Categories}");

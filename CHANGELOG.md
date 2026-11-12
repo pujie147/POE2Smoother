@@ -6,7 +6,31 @@
 This file is the source of truth for release notes. Pushing a `vX.Y.Z` tag makes CI build the AppImage
 and publish the matching section below as the release body — keep the heading exactly equal to the tag.
 
-## [Unreleased] / 未发布
+## v1.2 – 2026-11-12
+
+### 新增 / Added
+
+- **Windows 支持**:便携 ZIP(`PoE2Smoother-win-x64.zip`、`pscli-win-x64.zip`)与 AppImage 一起发布;
+  自动识别 Steam(注册表、多库、盘符兜底)与独立客户端;写入被拒时 GUI 提供「以管理员身份重启」。
+  *Windows support: portable ZIPs ship next to the AppImage; Steam (registry, multiple libraries,
+  per-drive fallback) and the standalone client are detected automatically; the GUI offers
+  "Run as admin" when a write is denied.*
+- **独立客户端 `Content.ggpk`(实验性)**:vendor LibGGPK3 / LibBundledGGPK3,索引读写沿用同一套 bundle 逻辑;
+  备份只导出容器内的索引,写入前有日志标记与磁盘空间检查。
+  *Standalone `Content.ggpk` support (experimental): LibGGPK3 / LibBundledGGPK3 are vendored and the
+  same bundle logic now runs over the in-container index; backups export only that index, and writes
+  are journalled and free-space checked.*
+- GUI 主页新增「浏览」按钮手动选择 `_.index.bin` / `Content.ggpk`,并显示目标类型。
+  *The GUI gained a "Browse" button to pick `_.index.bin` / `Content.ggpk` by hand, and the home tab
+  shows the target type.*
+- 测试新增合成 GGPK 夹具,覆盖独立客户端的 apply / status / restore 全流程(CI 也会跑)。
+  *Tests build a synthetic GGPK fixture and cover the standalone apply / status / restore cycle (CI included).*
+
+### 修复 / Fixed
+
+- 交叉发布 `-r win-x64` 会挑到 linux-x64 的 vendored 原生库;RID 选择现在先看 RID,再用宿主 OS 兜底。
+  *Cross-publishing with `-r win-x64` used to pick the linux-x64 vendored natives; RID selection now
+  prefers the RID and only falls back to the host OS.*
 
 ## v1.1 – 2026-11-11
 

@@ -9,6 +9,16 @@ Write-Host "== build =="
 dotnet build (Join-Path $Root "PoE2Smoother.sln") -c Release
 if ($LASTEXITCODE -ne 0) { throw "build failed" }
 
+# Cross-publish must pick the matching vendored natives: a win-x64 publish built on a Linux
+# host used to fall through to the host-OS condition and ship the linux-x64 DLLs.
+Write-Host "== vendor native dir (RID selection) =="
+foreach ($rid in @("win-x64", "linux-x64")) {
+    $dir = (dotnet msbuild (Join-Path $Root "src/PsCore/PsCore.csproj") -getProperty:LibGGPK3Dir -p:RuntimeIdentifier=$rid -nologo) -join ""
+    if ((Split-Path -Leaf $dir.Trim()) -ne $rid) {
+        throw "RID selection broken: RuntimeIdentifier=$rid resolved to '$dir'"
+    }
+}
+
 Write-Host "== unit/integration tests =="
 dotnet $Tests
 if ($LASTEXITCODE -ne 0) { throw "test suite failed" }

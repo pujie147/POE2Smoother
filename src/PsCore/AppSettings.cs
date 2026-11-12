@@ -5,7 +5,7 @@ namespace PsCore;
 public sealed class AppSettings
 {
     public string Language { get; set; } = "zh";
-    public string? LastIndexPath { get; set; }
+    public string? LastTargetPath { get; set; }
     public string LastPreset { get; set; } = "safe";
     public string? LastRulePackPath { get; set; }
     public bool IncludeExperimental { get; set; }

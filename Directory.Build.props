@@ -10,7 +10,10 @@
          这里刻意**不写** AssemblyVersion / FileVersion:SDK 会从 Version 派生数字版本
          (1.1.0 -> 1.1.0.0),写死反而会让 -p:Version 覆盖不掉它们。 -->
     <Version Condition="'$(Version)' == ''">0.0.0-dev</Version>
-    <LibGGPK3Dir Condition="'$(RuntimeIdentifier)' == 'linux-x64'">$(MSBuildThisFileDirectory)vendor/libggpk3/linux-x64</LibGGPK3Dir>
+    <!-- 先按 RID 选原生库目录,再按宿主 OS 兜底。只按宿主判断会在交叉发布时出错:
+         在 Linux 上 publish -r win-x64 会挑到 linux-x64 的 DLL。 -->
+    <LibGGPK3Dir Condition="$([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('win'))">$(MSBuildThisFileDirectory)vendor/libggpk3/win-x64</LibGGPK3Dir>
+    <LibGGPK3Dir Condition="$([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('linux'))">$(MSBuildThisFileDirectory)vendor/libggpk3/linux-x64</LibGGPK3Dir>
     <LibGGPK3Dir Condition="'$(LibGGPK3Dir)' == '' and $([MSBuild]::IsOSPlatform('Linux'))">$(MSBuildThisFileDirectory)vendor/libggpk3/linux-x64</LibGGPK3Dir>
     <LibGGPK3Dir Condition="'$(LibGGPK3Dir)' == ''">$(MSBuildThisFileDirectory)vendor/libggpk3/win-x64</LibGGPK3Dir>
   </PropertyGroup>
@@ -18,6 +21,14 @@
   <ItemGroup>
     <Reference Include="LibBundle3" Condition="Exists('$(LibGGPK3Dir)/LibBundle3.dll')">
       <HintPath>$(LibGGPK3Dir)/LibBundle3.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="LibGGPK3" Condition="Exists('$(LibGGPK3Dir)/LibGGPK3.dll')">
+      <HintPath>$(LibGGPK3Dir)/LibGGPK3.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="LibBundledGGPK3" Condition="Exists('$(LibGGPK3Dir)/LibBundledGGPK3.dll')">
+      <HintPath>$(LibGGPK3Dir)/LibBundledGGPK3.dll</HintPath>
       <Private>true</Private>
     </Reference>
     <Reference Include="SystemExtensions" Condition="Exists('$(LibGGPK3Dir)/SystemExtensions.dll')">

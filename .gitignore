@@ -25,11 +25,15 @@ vendor/libggpk3/*
 
 vendor/libggpk3/linux-x64/*
 !vendor/libggpk3/linux-x64/LibBundle3.dll
+!vendor/libggpk3/linux-x64/LibGGPK3.dll
+!vendor/libggpk3/linux-x64/LibBundledGGPK3.dll
 !vendor/libggpk3/linux-x64/SystemExtensions.dll
 !vendor/libggpk3/linux-x64/liboo2core.so
 
 vendor/libggpk3/win-x64/*
 !vendor/libggpk3/win-x64/LibBundle3.dll
+!vendor/libggpk3/win-x64/LibGGPK3.dll
+!vendor/libggpk3/win-x64/LibBundledGGPK3.dll
 !vendor/libggpk3/win-x64/SystemExtensions.dll
 !vendor/libggpk3/win-x64/oo2core.dll
 

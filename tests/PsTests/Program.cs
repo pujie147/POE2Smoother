@@ -575,6 +575,115 @@ Check("path: from game root -> index", Path.GetFullPath(fromRoot.IndexPath) == P
     Check("profile: deleted", store.Delete("deck-safe") && !store.List().Contains("deck-safe"));
 }
 
+// ---------------------------------------------------------------------------
+// Locators: Windows-style library file, standalone Content.ggpk
+// ---------------------------------------------------------------------------
+{
+    var root = TestIndexBuilder.NewRoot("locators");
+    var steamRoot = Path.Combine(root, "Steam");
+    var libRoot = Path.Combine(root, "Lib2");
+    var gameA = Path.Combine(steamRoot, "steamapps", "common", "Path of Exile 2");
+    var gameB = Path.Combine(libRoot, "steamapps", "common", "PathOfExile2");
+    TestIndexBuilder.Build(Path.Combine(gameA, "Bundles2"),
+        [("metadata/effects/spells/fire/a.ao", Encoding.UTF8.GetBytes("a"))]);
+    TestIndexBuilder.Build(Path.Combine(gameB, "Bundles2"),
+        [("metadata/effects/spells/fire/b.ao", Encoding.UTF8.GetBytes("b"))]);
+
+    // Steam writes library paths with escaped backslashes on Windows.
+    var escaped = libRoot.Replace(@"\", @"\\");
+    File.WriteAllText(Path.Combine(steamRoot, "steamapps", "libraryfolders.vdf"),
+        "\"libraryfolders\"\n{\n\t\"0\"\n\t{\n\t\t\"path\"\t\t\"" + escaped + "\"\n\t}\n}\n");
+
+    var steamCandidates = SteamLibraryLocator.FindCandidates([steamRoot], []);
+    Check("locator: primary steam library found",
+        steamCandidates.Any(c => Path.GetFullPath(c.GameRoot) == Path.GetFullPath(gameA)));
+    Check("locator: vdf library found",
+        steamCandidates.Any(c => Path.GetFullPath(c.GameRoot) == Path.GetFullPath(gameB)),
+        string.Join("; ", steamCandidates.Select(c => c.GameRoot)));
+
+    var standaloneRoot = Path.Combine(root, "Standalone");
+    var stagingBundles = Path.Combine(root, "standalone-staging");
+    TestIndexBuilder.Build(stagingBundles,
+        [("metadata/effects/spells/fire/c.ao", Encoding.UTF8.GetBytes("c"))]);
+    Directory.CreateDirectory(standaloneRoot);
+    var ggpkPath = TestGgpkBuilder.Wrap(stagingBundles, Path.Combine(standaloneRoot, "Content.ggpk"));
+
+    var standalone = StandaloneLocator.FindCandidates([standaloneRoot]);
+    Check("locator: standalone found", standalone.Count == 1 && standalone[0].IsGgpk,
+        $"count={standalone.Count}");
+
+    var manualGgpk = GameLocator.FromManualPath(ggpkPath);
+    Check("locator: manual ggpk path", manualGgpk.IsGgpk &&
+                                        manualGgpk.TargetPath == Path.GetFullPath(ggpkPath));
+    var manualRoot = GameLocator.FromManualPath(standaloneRoot);
+    Check("locator: manual ggpk folder", manualRoot.IsGgpk);
+}
+
+// ---------------------------------------------------------------------------
+// Standalone client: apply, status and restore inside Content.ggpk
+// ---------------------------------------------------------------------------
+{
+    var root = TestIndexBuilder.NewRoot("ggpk");
+    var bundles = Path.Combine(root, "Bundles2");
+    var originalAo = "version 1\nAddAttached( 'metadata/effects/spells/fire/burn.pet', <root> );\nKeepThis();\n";
+    TestIndexBuilder.Build(bundles, new[]
+    {
+        ("metadata/effects/spells/fire/fireball.ao", Encoding.UTF8.GetBytes(originalAo)),
+        ("metadata/effects/spells/fire/tex.dds", new byte[] { 1, 2, 3, 4 })
+    });
+
+    var ggpkPath = TestGgpkBuilder.Wrap(bundles, Path.Combine(root, "Content.ggpk"));
+    var game = StandaloneLocator.FromGgpk(ggpkPath);
+    var store = TargetStore.For(game);
+    var originalHash = store.HashIndex();
+
+    var appPaths = new AppPaths(Path.Combine(root, "home"));
+    appPaths.Ensure();
+    var service = new AppService(appPaths);
+    var (ggpkPack, _) = service.BuildRules(game, "GGPK Test", "test");
+
+    var request = new ApplyRequest
+    {
+        Game = game,
+        Pack = ggpkPack,
+        Preset = "safe",
+        Ignore = IgnoreList.Default(),
+        Force = true
+    };
+
+    var result = service.Apply(request);
+    Check("ggpk: two files changed", result.Plan.Changes.Count == 2, $"count={result.Plan.Changes.Count}");
+    Check("ggpk: backup exists", File.Exists(result.BackupPath));
+    Check("ggpk: index hash changed", !result.OriginalSha256.Equals(result.AppliedSha256,
+        StringComparison.OrdinalIgnoreCase));
+    Check("ggpk: write journal cleared", !File.Exists(ggpkPath + ".psjournal"));
+
+    using (var read = IndexSession.OpenReadOnly(game))
+    {
+        read.TryGetFile("metadata/effects/spells/fire/fireball.ao", out var aoRecord);
+        var text = Encoding.UTF8.GetString(aoRecord!.Read().ToArray());
+        Check("ggpk: ao stripped", !text.Contains("AddAttached"));
+        Check("ggpk: ao kept other code", text.Contains("KeepThis"));
+    }
+
+    var status = service.GetStatus(game);
+    Check("ggpk: status modified", status.IsModified);
+    Check("ggpk: custom bundles inside ggpk", status.CustomBundlesExist);
+
+    var restore = service.Restore(new RestoreRequest { Game = game });
+    Check("ggpk: restore reports index restored", restore.RestoredIndex);
+    Check("ggpk: index bytes back to original",
+        store.HashIndex().Equals(originalHash, StringComparison.OrdinalIgnoreCase));
+    Check("ggpk: custom bundles removed", !store.HasCustomBundles());
+
+    using (var read = IndexSession.OpenReadOnly(game))
+    {
+        read.TryGetFile("metadata/effects/spells/fire/fireball.ao", out var aoRecord);
+        Check("ggpk: original ao content back",
+            Encoding.UTF8.GetString(aoRecord!.Read().ToArray()) == originalAo);
+    }
+}
+
 Console.WriteLine();
 Console.WriteLine($"{tests - failures}/{tests} tests passed.");
 return failures == 0 ? 0 : 1;

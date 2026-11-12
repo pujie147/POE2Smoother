@@ -1,4 +1,6 @@
+using System.Runtime.Versioning;
 using System.Text.RegularExpressions;
+using Microsoft.Win32;
 
 namespace PsCore;
 
@@ -16,6 +18,18 @@ public static class SteamLibraryLocator
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     public static IReadOnlyList<GameLocation> FindCandidates()
+        => FindCandidates(
+            SteamRoots(),
+            OperatingSystem.IsWindows()
+                ? WindowsSteamApps()
+                : MountRoots().SelectMany(EnumerateMountSteamApps));
+
+    /// <summary>
+    /// Injectable entry point: tests pass fake Steam roots instead of the real registry/home.
+    /// </summary>
+    internal static IReadOnlyList<GameLocation> FindCandidates(
+        IEnumerable<string> steamRoots,
+        IEnumerable<string> additionalSteamApps)
     {
         var results = new List<GameLocation>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -29,13 +43,13 @@ public static class SteamLibraryLocator
         if (!string.IsNullOrWhiteSpace(directRoot))
             AddLocation(results, seen, FromGameRoot(directRoot));
 
-        foreach (var root in SteamRoots())
+        foreach (var root in steamRoots)
             AddSteamRoot(steamAppsRoots, root);
 
-        foreach (var mount in MountRoots())
+        foreach (var steamApps in additionalSteamApps)
         {
-            foreach (var steamApps in EnumerateMountSteamApps(mount))
-                steamAppsRoots.Add(steamApps);
+            if (Directory.Exists(steamApps))
+                steamAppsRoots.Add(Path.GetFullPath(steamApps));
         }
 
         foreach (var steamApps in steamAppsRoots)
@@ -49,11 +63,9 @@ public static class SteamLibraryLocator
 
         return results
             .OrderByDescending(l => l.IsSteamBundles)
-            .ThenBy(l => l.IndexPath, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(l => l.TargetPath, StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
-
-    public static GameLocation? FindBest() => FindCandidates().FirstOrDefault(l => l.IsSteamBundles);
 
     public static GameLocation FromIndex(string indexPath)
     {
@@ -75,9 +87,18 @@ public static class SteamLibraryLocator
     private static IEnumerable<string> SteamRoots()
     {
         var roots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
         AddRoot(roots, Environment.GetEnvironmentVariable("STEAM_ROOT"));
+
+        if (OperatingSystem.IsWindows())
+        {
+            AddWindowsRegistryRoots(roots);
+            AddRoot(roots, SpecialFolderChild(Environment.SpecialFolder.ProgramFilesX86, "Steam"));
+            AddRoot(roots, SpecialFolderChild(Environment.SpecialFolder.ProgramFiles, "Steam"));
+            return roots;
+        }
+
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         AddRoot(roots, Path.Combine(home, ".local", "share", "Steam"));
         AddRoot(roots, Path.Combine(home, ".steam", "steam"));
         AddRoot(roots, Path.Combine(home, ".steam", "root"));
@@ -85,6 +106,61 @@ public static class SteamLibraryLocator
 
         return roots;
     }
+
+    [SupportedOSPlatform("windows")]
+    private static void AddWindowsRegistryRoots(ISet<string> roots)
+    {
+        AddRegistryRoot(roots, Registry.CurrentUser, @"Software\Valve\Steam", "SteamPath");
+        AddRegistryRoot(roots, Registry.LocalMachine, @"SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath");
+        AddRegistryRoot(roots, Registry.LocalMachine, @"SOFTWARE\Valve\Steam", "InstallPath");
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void AddRegistryRoot(ISet<string> roots, RegistryKey hive, string subKey, string valueName)
+    {
+        try
+        {
+            using var key = hive.OpenSubKey(subKey);
+            if (key?.GetValue(valueName) is string value)
+                AddRoot(roots, value);
+        }
+        catch
+        {
+            // no permission to read the hive: detection falls back to the well-known folders
+        }
+    }
+
+    private static string? SpecialFolderChild(Environment.SpecialFolder folder, string child)
+    {
+        var root = Environment.GetFolderPath(folder);
+        return string.IsNullOrWhiteSpace(root) ? null : Path.Combine(root, child);
+    }
+
+    /// <summary>
+    /// Bounded per-drive probe for secondary Steam libraries. Enumerating whole drives would be
+    /// far too slow on Windows, so only the conventional layouts are checked.
+    /// </summary>
+    private static IEnumerable<string> WindowsSteamApps()
+    {
+        foreach (var drive in LocalDrives.FixedRoots())
+        {
+            foreach (var relative in WindowsSteamLibraryDirs)
+            {
+                var steamApps = Path.Combine(drive, relative, "steamapps");
+                if (Directory.Exists(steamApps))
+                    yield return steamApps;
+            }
+        }
+    }
+
+    private static readonly string[] WindowsSteamLibraryDirs =
+    [
+        "SteamLibrary",
+        "Steam",
+        Path.Combine("Program Files (x86)", "Steam"),
+        Path.Combine("Program Files", "Steam"),
+        Path.Combine("Games", "SteamLibrary")
+    ];
 
     private static void AddRoot(ISet<string> roots, string? root)
     {
@@ -197,9 +273,9 @@ public static class SteamLibraryLocator
 
     private static void AddLocation(List<GameLocation> results, ISet<string> seen, GameLocation location)
     {
-        if (!File.Exists(location.IndexPath))
+        if (!File.Exists(location.TargetPath))
             return;
-        if (seen.Add(Path.GetFullPath(location.IndexPath)))
+        if (seen.Add(Path.GetFullPath(location.TargetPath)))
             results.Add(location);
     }
 

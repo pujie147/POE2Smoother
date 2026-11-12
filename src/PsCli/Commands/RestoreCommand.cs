@@ -21,7 +21,7 @@ internal static class RestoreCommand
         if (!args.HasFlag("yes"))
         {
             var status = service.GetStatus(game);
-            Console.WriteLine($"index  : {game.IndexPath}");
+            Console.WriteLine($"target : {game.TargetPath}");
             Console.WriteLine($"state  : {(status.State == null ? "none" : status.State.Preset)}");
             Console.WriteLine($"backup : {request.BackupPath ?? status.State?.BackupPath ?? "(unknown)"}");
             Console.WriteLine($"url    : {request.IndexUrl ?? "(none)"}");

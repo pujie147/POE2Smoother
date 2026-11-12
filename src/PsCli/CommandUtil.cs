@@ -11,27 +11,29 @@ internal static class CommandUtil
     {
         var index = args.Get("index");
         if (!string.IsNullOrWhiteSpace(index))
-        {
-            var location = SteamLibraryLocator.FromIndex(index);
-            if (!File.Exists(location.IndexPath))
-                throw new FileNotFoundException("index not found", location.IndexPath);
-            return location;
-        }
+            return Validate(GameLocator.FromManualPath(index));
 
         var root = args.Get("game");
         if (!string.IsNullOrWhiteSpace(root))
-        {
-            var location = SteamLibraryLocator.FromGameRoot(root);
-            if (!File.Exists(location.IndexPath))
-                throw new FileNotFoundException("index not found", location.IndexPath);
-            return location;
-        }
+            return Validate(GameLocator.FromManualPath(root));
 
-        var best = SteamLibraryLocator.FindBest();
+        var ggpk = args.Get("ggpk");
+        if (!string.IsNullOrWhiteSpace(ggpk))
+            return Validate(StandaloneLocator.FromGgpk(ggpk));
+
+        var best = GameLocator.FindBest();
         if (best == null)
             throw new InvalidOperationException(
-                "PoE2 was not found. Use --index <Bundles2/_.index.bin> or --game <game root>.");
+                "PoE2 was not found. Use --index <Bundles2/_.index.bin>, --game <game root> " +
+                "or --ggpk <Content.ggpk>.");
         return best;
+    }
+
+    private static GameLocation Validate(GameLocation location)
+    {
+        if (!File.Exists(location.TargetPath))
+            throw new FileNotFoundException("PoE2 data file not found", location.TargetPath);
+        return location;
     }
 
     public static RulePack LoadPack(ParsedArgs args, AppPaths paths, GameLocation? game)
