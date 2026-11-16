@@ -65,6 +65,19 @@ python3 -I …        # 解析 + join,产物是 id → 官方名 的待审清单
 | ActiveSkills 可挖行 / 我们技能段命中 | 1,146 行 / 190 条(歧义 0) |
 | 显示后无任何汉字的行数 | **0**(改前 464) |
 
-改写那 68 条的原因:官方用词和我造的不是一回事。例:`crossbow` 官方是「十字弓射擊」不是「弩」,
-`frost_wall` 是「冰牆」不是「霜墙」,`contagion` 是「瘟疫」不是「传染」,`bow_snipe` 是「狙擊」不是「弓·狙击」。
+改写那 68 条的原因:官方用词和我造的不是一回事,尤其是**官方名不带武器/元素前缀**,我却一律加了上去:
+
+| 类别 Id | 我造的 | 官方 |
+|---|---|---|
+| `skill.cold_frostwall` | 冰霜·霜墙 | 冰牆 |
+| `skill.chaos_contagion` | 混沌·传染 | 瘟疫 |
+| `skill.bow_snipe` | 弓·狙击 | 狙擊 |
+| `skill.aura_purity` | 光环·纯净 | 元素淨化 |
+| `skill.crossbow_cluster_grenade` | 弩·集束榴弹 | 集束擲彈 |
+| `skill.spear_glaciallance` | 长矛·冰川长枪 | 冰川之槍 |
+
 这条教训值得记住:**能给官方名就别自己起名。**
+
+反例也要记住:`skill.crossbow` 那条「弩」至今仍在表里、没有被官方名替换(它对应的是
+`metadata/effects/spells/crossbow/` 这种通用目录,ActiveSkills 里没有同名行)。早期用子串匹配时
+它"命中"过一个「十字弓射擊」,那是别的行的名字,**已随子串规则一起废弃 —— 不要把那份结果当成官方名**。

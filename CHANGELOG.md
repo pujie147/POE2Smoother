@@ -42,8 +42,9 @@ and publish the matching section below as the release body — keep the heading 
   - 官方繁體名**逐字照抄,不转简体**:转出来的字符串会被当成官方名,而官方简体译法不总是逐字对应。
     于是这一列暂时繁體(官方)+ 简体(手写)并存 —— 装上 Steam 的简体中文语言包后按 `docs/zh-labels.md`
     再跑一遍,整列可换成官方简体名,混排自然消失。
-  - 被官方名改写的 68 条说明了我自造名字的错处:`crossbow` 官方是「十字弓射擊」不是「弩」,`frost_wall` 是
-    「冰牆」不是「霜墙」,`contagion` 是「瘟疫」不是「传染」。**能给官方名就别自己起名。**
+  - 被官方名改写的 68 条说明了我自造名字的错处,尤其是**官方名不带武器/元素前缀**:`frost_wall` 官方是
+    「冰牆」(我写「冰霜·霜墙」)、`contagion`「瘟疫」(我写「混沌·传染」)、`bow_snipe`「狙擊」(我写「弓·狙击」)、
+    `crossbow_cluster_grenade`「集束擲彈」(我写「弩·集束榴弹」)。**能给官方名就别自己起名。**
   - 挖掘脚本与格式细节、重跑步骤记在 `docs/zh-labels.md`(脚本不进仓库:读的是第三方二进制,产物要人过一遍)。
 - 已知不足:技能段 656 个里仍有 466 个在 ActiveSkills 表里没有对应行(变体 `_02`/`_03`、机制类
   `attack_trails`/`ascension`、坐骑等),它们继续显示「技能: 原名」;环境组的 `env.g3_5`、`env.act3_four`
