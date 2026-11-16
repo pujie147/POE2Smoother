@@ -40,6 +40,59 @@ public static class EffectLabels
     public static IReadOnlyDictionary<string, string> All => Table.Value;
 
     /// <summary>
+    /// Chinese frame per id namespace, worded exactly like <see cref="RulePackBuilder.Classify"/> so a
+    /// rebuilt pack and an old one on disk read the same. Only namespaces the builder emits are listed:
+    /// <c>monsters</c>/<c>misc</c> carry no dot and already have real Chinese names.
+    /// </summary>
+    private static readonly Dictionary<string, string> Frames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["skill"] = "技能",
+        ["env"] = "环境",
+        ["terrain"] = "地形",
+        ["mtx"] = "外观",
+        ["league"] = "联赛"
+    };
+
+    /// <summary>
+    /// English frames <see cref="RulePackBuilder"/> puts in the <c>en</c> label. Stripped before a
+    /// Chinese frame is added, otherwise an old pack would read "环境: Environment material: Desert".
+    /// </summary>
+    private static readonly string[] EnglishFrames =
+    [
+        "Environment material: ", "Environment: ", "Terrain: ", "MTX: ", "Monster skills", "Misc effects"
+    ];
+
+    public static bool ContainsHan(string? text) =>
+        text != null && text.Any(c => c >= 0x4E00 && c <= 0x9FFF);
+
+    /// <summary>
+    /// "<c>技能: Arc</c>" for a name that arrived in Latin letters from an old pack, or the text
+    /// unchanged when the namespace is unknown — inventing a frame for an id the builder never
+    /// produces would label foreign packs with categories they do not have.
+    /// </summary>
+    public static string WithFrame(string id, string name)
+    {
+        var dot = id.IndexOf('.');
+        if (dot <= 0 || !Frames.TryGetValue(id[..dot], out var frame))
+            return name;
+
+        var bare = name;
+        foreach (var prefix in EnglishFrames)
+        {
+            if (bare.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                bare = bare[prefix.Length..];
+                break;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(bare))
+            return name;
+
+        return $"{frame}: {bare.Trim()}";
+    }
+
+    /// <summary>
     /// A missing or malformed table must degrade to "no Chinese names", never to a tool that cannot
     /// list categories — the label table is polish, category access is the product.
     /// </summary>

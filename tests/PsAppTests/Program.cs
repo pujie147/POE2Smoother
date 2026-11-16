@@ -240,6 +240,14 @@ RulePackStore.Save(new RulePack
             Group = "misc",
             Label = new() { ["en"] = "Fx" },
             Rules = [new Rule { Path = "fx/fireball.ao", Strategy = StrategyKind.StripAttachments }]
+        },
+        // what the builder wrote before it framed the zh slot: English in both places
+        new RuleCategory
+        {
+            Id = "skill.zzz_stale",
+            Group = "skills",
+            Label = new() { ["zh"] = "Old Name", ["en"] = "Old Name" },
+            Rules = [new Rule { Path = "metadata/effects/spells/zzz/a.ao", Strategy = StrategyKind.StripAttachments }]
         }
     ],
     Presets = new() { ["full"] = ["*"] }
@@ -249,7 +257,7 @@ refreshStatus.Invoke(window, null);
 Dispatcher.UIThread.RunJobs();
 if (!statusText.Text!.Contains("不在规则包") || !statusText.Text.Contains("not found"))
     throw new Exception($"unknown preset name should warn: {statusText.Text}");
-if (!selectionText.Text!.Contains("已选 1/1"))
+if (!selectionText.Text!.Contains("已选 2/2"))
     throw new Exception($"unknown preset should fall back to all-selected: {selectionText.Text}");
 if (!applyButton.IsEnabled)
     throw new Exception("apply should stay enabled while rows are selected");
@@ -258,6 +266,12 @@ if (!applyButton.IsEnabled)
 var foreignRow = groups.SelectMany(g => g.Categories).Single(c => c.Id == "fx.spells.fire");
 if (foreignRow.Label != "Fx" || foreignRow.LabelSecondary != null || foreignRow.FullLabel != "Fx")
     throw new Exception($"english-only pack should not repeat itself: {foreignRow.FullLabel}");
+
+// The row a 2026-11 pack really has: English in the zh slot. It must arrive framed, not bare —
+// that is the whole reason framing lives in LabelFor instead of only in the builder.
+var staleRow = groups.SelectMany(g => g.Categories).Single(c => c.Id == "skill.zzz_stale");
+if (staleRow.Label != "技能: Old Name" || staleRow.LabelSecondary != null)
+    throw new Exception($"stale pack row should be framed without repeating: {staleRow.FullLabel}");
 
 // known preset that matches zero categories: amber warning + Apply disabled + honest count
 var foreignSafe = Path.Combine(home, "rulepacks", "foreign-safe.json");

@@ -25,10 +25,29 @@ and publish the matching section below as the release body — keep the heading 
   *Shipped `labels-zh.json` (305 ids, embedded) resolves at display time, so existing rule packs show
   the new names without a rebuild; unknown skills fall back to a Chinese prefix, and the CLI prints
   table coverage so the list can keep growing.*
-- 已知不足:客户端自带的中文只有繁體、且以压缩的 `.datc64` 存放(`data/balance/traditional chinese/`,
-  219 张表),本期未接入,技能长尾仍是英文原名。
-  *The client's own Chinese is Traditional-only and stored as compressed `.datc64` tables; mining it is
-  still ahead of us, so the skill long tail keeps its English folder name.*
+- **技能名改成从客户端自己挖**,并且旧规则包不用重扫也全部有中文。上一版词表只写了 305 条、技能段只覆盖
+  191 个,而本机规则包 992 个类别里有 **464 行一个汉字都没有**(全是 `skill.*`):一半是我漏写,另一半是因为
+  「技能: X」前缀加在生成期,11-11 那份旧包根本没重扫过。
+  *464 of 992 categories rendered with no Chinese at all — half missing table entries, half a stale pack
+  that never got the prefix the builder now writes.*
+  - 前缀移到**显示期**(`RulePack.LabelFor`):词表 → 包内标签 → 若结果不含汉字且命名空间已知,按
+    「技能: / 环境: / 地形: / 外观: / 联赛: 」补框架。改完对同一份旧包量过一次:无汉字行 **464 → 0**。
+  - 名字改为**直接读客户端的 ActiveSkills 表**:`.datc64` 其实是列式容器 + UTF-16LE 字符串池(**不是压缩的** —
+    上一版报告说它压缩,是我用 `strings` 没加 `-el` 看错了),语言覆盖表与基础表行序一致、`Id` 列保持 ASCII,
+    所以不需要 schema 就能按 Id 对齐取到本地化名。挖到 190 条官方名(新增 122、**改写我原先手写的 68**),
+    词表到 427 条。
+  - join 只做「剥掉最多两个类别前缀后的词元集合相等」,歧义一律丢弃。曾经的子串匹配把
+    `cold_arcticarmour` 标成「電弧」(含 `arc`)、`bow_tornado_shot` 标成「龍捲風」(抓到德鲁伊的 `tornado`)、
+    `flaming_wrath` 标成「雷霆」——一个共有名词不足以认定同一个技能,勾选项挂错名字会让人按错行下手。
+  - 官方繁體名**逐字照抄,不转简体**:转出来的字符串会被当成官方名,而官方简体译法不总是逐字对应。
+    于是这一列暂时繁體(官方)+ 简体(手写)并存 —— 装上 Steam 的简体中文语言包后按 `docs/zh-labels.md`
+    再跑一遍,整列可换成官方简体名,混排自然消失。
+  - 被官方名改写的 68 条说明了我自造名字的错处:`crossbow` 官方是「十字弓射擊」不是「弩」,`frost_wall` 是
+    「冰牆」不是「霜墙」,`contagion` 是「瘟疫」不是「传染」。**能给官方名就别自己起名。**
+  - 挖掘脚本与格式细节、重跑步骤记在 `docs/zh-labels.md`(脚本不进仓库:读的是第三方二进制,产物要人过一遍)。
+- 已知不足:技能段 656 个里仍有 466 个在 ActiveSkills 表里没有对应行(变体 `_02`/`_03`、机制类
+  `attack_trails`/`ascension`、坐骑等),它们继续显示「技能: 原名」;环境组的 `env.g3_5`、`env.act3_four`
+  一类开发编号同理。
 
 ## v1.3 – 2026-11-16
 

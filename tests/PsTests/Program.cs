@@ -208,8 +208,12 @@ var englishOnly = new RuleCategory
     Label = new Dictionary<string, string> { ["en"] = "Fx" }
 };
 var englishOnlyPair = englishOnly.LabelPair("zh");
+// Framing came after this test was written: an English-only zh slot is now framed, and the framed
+// form must still not repeat the name on the right.
 Check("labels: identical zh/en hides the secondary",
-    englishOnlyPair.Primary == "Fx" && englishOnlyPair.Secondary == null);
+    englishOnlyPair.Primary == "技能: Fx" && englishOnlyPair.Secondary == null, englishOnlyPair.ToString());
+Check("labels: en request is never framed",
+    englishOnly.LabelPair("en").Primary == "Fx");
 
 // A skill folder the table has not learned yet must still read as Chinese-framed, which is the
 // whole point: on the live client ~650 of 992 categories are spell folders.
@@ -226,6 +230,71 @@ Check("labels: file extension hidden from the name",
     shader.Label["en"] == "Environment material: Rainshader" &&
     shader.Label["zh"] == "环境材质: Rainshader", $"{shader.Label["zh"]} | {shader.Label["en"]}");
 Check("labels: id keeps the extension so old presets still match", shader.Id == "env.rainshader.fxgraph");
+
+// Packs written before the builder framed the zh slot carry the bare English folder name there, so
+// 464 of 992 rows had no Chinese at all. Framing at display time fixes those packs without asking
+// anyone to re-scan a GGPK.
+foreach (var (id, group, frame) in new[]
+         {
+             ("skill.zzz_unseen", "skills", "技能: "),
+             ("env.zzz_unseen", "environment", "环境: "),
+             ("terrain.zzz_unseen", "environment", "地形: "),
+             ("mtx.zzz_unseen", "mtx", "外观: "),
+             ("league.zzz_unseen", "leagues", "联赛: ")
+         })
+{
+    var stale = new RuleCategory
+    {
+        Id = id,
+        Group = group,
+        // exactly what the old builder wrote into both slots
+        Label = new Dictionary<string, string> { ["zh"] = "Some Name", ["en"] = "Some Name" }
+    };
+    Check($"labels: stale pack gets a {frame}frame", stale.LabelFor("zh").StartsWith(frame), stale.LabelFor("zh"));
+    Check($"labels: {frame}frame does not repeat the English name",
+        stale.LabelPair("zh").Secondary == null, stale.LabelPair("zh").ToString());
+    Check($"labels: en side stays untranslated for {id}", stale.LabelFor("en") == "Some Name");
+}
+
+// An English frame inside the pack label must not survive inside a Chinese frame
+// ("环境: Environment material: X" would be nonsense).
+var doubleFramed = new RuleCategory
+{
+    Id = "env.desert_dust",
+    Group = "environment",
+    Label = new Dictionary<string, string> { ["en"] = "Environment material: Desert Dust" }
+};
+Check("labels: english frame is dropped before framing",
+    doubleFramed.LabelFor("zh") == "环境: Desert Dust", doubleFramed.LabelFor("zh"));
+
+// Already-Chinese labels must never get a second frame.
+var framed = new RuleCategory
+{
+    Id = "skill.fire",
+    Group = "skills",
+    Label = new Dictionary<string, string> { ["zh"] = "火焰", ["en"] = "Fire" }
+};
+Check("labels: chinese label is not framed again", framed.LabelFor("zh") == "火焰");
+// …and ids outside the builder's namespaces (foreign packs, test fixtures) stay untouched.
+var unknownNamespace = new RuleCategory
+{
+    Id = "fx.spells.fire",
+    Group = "misc",
+    Label = new Dictionary<string, string> { ["en"] = "Fx" }
+};
+Check("labels: unknown namespace is left alone", unknownNamespace.LabelFor("zh") == "Fx", unknownNamespace.LabelFor("zh"));
+
+// Official names mined out of the client's own tables are shipped verbatim (see docs/zh-labels.md),
+// so the column mixes scripts on purpose — a converted name would be presented as official when it
+// is not. Guard the ones that came from the client so a later edit cannot silently re-invent them.
+foreach (var (id, official) in new[]
+         {
+             ("skill.arc", "電弧"), ("skill.bow_tornado_shot", "龍捲射擊"), ("skill.cold_frostwall", "冰牆")
+         })
+{
+    var shipped = EffectLabels.TryGet(id, out var value) ? value : "";
+    Check($"labels: official name kept verbatim for {id}", shipped == official, shipped);
+}
 
 // ---------------------------------------------------------------------------
 // Path helpers

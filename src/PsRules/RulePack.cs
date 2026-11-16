@@ -166,6 +166,21 @@ public sealed class RuleCategory
     /// </summary>
     public string LabelFor(string language)
     {
+        var resolved = ResolveLabel(language);
+
+        // Packs built before the label work carry the English folder name in the zh slot, which is how
+        // 464 of 992 rows ended up with no Chinese at all. Framing happens here rather than in
+        // RulePackBuilder so an existing pack stops being English-only without re-scanning the GGPK;
+        // the test is "no Han anywhere in the label", not "the table missed" — framing a label that is
+        // already Chinese would produce "技能: 火焰".
+        if (!IsEnglish(language) && !EffectLabels.ContainsHan(resolved))
+            return EffectLabels.WithFrame(Id, resolved);
+
+        return resolved;
+    }
+
+    private string ResolveLabel(string language)
+    {
         if (IsEnglish(language) && Label.TryGetValue("en", out var english) && !string.IsNullOrWhiteSpace(english))
             return english;
 
