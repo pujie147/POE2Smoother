@@ -9,7 +9,7 @@ and gives the framerate and the thermals back to what actually matters — the g
 ## Features
 
 - Locates PoE2 automatically: multiple Steam libraries, SD-card installs, the Windows registry and conventional install folders — both the **Steam** version and the **standalone client's `Content.ggpk`** (experimental)
-- Effects are grouped by category — **skills / appearance / monsters / leagues (Abyss, Delirium, Splinter… 9 groups) / environment / other** — searchable by name, ID or path, whole groups toggle in one click
+- Effects are grouped by category — **skills / appearance / monsters / leagues (Abyss, Delirium, Splinter… 9 groups) / environment / other** — each row labelled in both Chinese and English, searchable by name (either language), ID or path, whole groups toggle in one click
 - Four presets **Safe / Clean / Performance / Full**, plus free category combinations, an editable ignore list, and saved profiles
 - Apply, status check, game-update detection, one-click restore; the original index is backed up before every apply
 - **Render compression (experimental, off by default)**: another path that keeps visuals but lowers render load — same-resolution BC7→BC1 textures, official mesh LOD swap, shader simplification, mesh decimation (strength slider), plus an aggressive downscale option; mutually exclusive with blanking, touches only `.dds`/`.fxgraph`/`.fmt`, never `.pet` configs

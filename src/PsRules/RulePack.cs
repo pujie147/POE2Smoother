@@ -159,14 +159,75 @@ public sealed class RuleCategory
     public Dictionary<string, string> Label { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public List<Rule> Rules { get; set; } = [];
 
+    /// <summary>
+    /// zh comes from <see cref="EffectLabels"/> first so a wording fix reaches rule packs that are
+    /// already on disk — rebuilding one means re-scanning the GGPK, which is not a price worth
+    /// charging for a label. en still comes from the pack, because that is the built artifact.
+    /// </summary>
     public string LabelFor(string language)
     {
+        if (IsEnglish(language) && Label.TryGetValue("en", out var english) && !string.IsNullOrWhiteSpace(english))
+            return english;
+
+        if (EffectLabels.TryGet(Id, out var shipped))
+            return shipped;
+
         if (Label.TryGetValue(language, out var value) && !string.IsNullOrWhiteSpace(value))
             return value;
         if (Label.TryGetValue("en", out var en) && !string.IsNullOrWhiteSpace(en))
             return en;
         return Id;
     }
+
+    /// <summary>
+    /// Both languages for one row, ordered by the current UI language. The secondary language is
+    /// null when it would repeat the primary — packs built before the label table carry identical
+    /// zh/en strings for most skills, and "Fire / Fire" reads like a bug.
+    /// </summary>
+    public (string Primary, string? Secondary) LabelPair(string language)
+    {
+        var primary = LabelFor(language);
+        var secondary = LabelFor(IsEnglish(language) ? "zh" : "en");
+
+        // LabelFor falls through to the id when a pack has no label at all; a bare id duplicated on
+        // both sides is noise, not information.
+        if (string.IsNullOrWhiteSpace(secondary) || secondary == primary || CarriesSameName(primary, secondary))
+            return (primary, null);
+
+        return (primary, secondary);
+    }
+
+    /// <summary>
+    /// True when the other side only repeats the same name. Most skill rows are labelled
+    /// "中文前缀 + 英文原名" — "技能: Crossbow Ballistas" — so printing the English again would show
+    /// the same words twice on the ~650 categories the label table has not learned yet. Compared on
+    /// the latin core so the Chinese frame and the English frame of one name cancel out, while a real
+    /// translation ("火焰" vs "Fire", whose cores are empty and unequal alike) still shows both.
+    /// </summary>
+    private static bool CarriesSameName(string primary, string secondary)
+    {
+        var a = LatinCore(primary);
+        var b = LatinCore(secondary);
+        if (a.Length == 0 || b.Length == 0)
+            return false;
+
+        return a == b || b.Contains(a, StringComparison.Ordinal) || a.Contains(b, StringComparison.Ordinal);
+    }
+
+    private static string LatinCore(string value)
+    {
+        var buffer = new System.Text.StringBuilder(value.Length);
+        foreach (var c in value)
+        {
+            if (c is >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9')
+                buffer.Append(char.ToLowerInvariant(c));
+        }
+
+        return buffer.ToString();
+    }
+
+    private static bool IsEnglish(string language) =>
+        language.Equals("en", StringComparison.OrdinalIgnoreCase);
 }
 
 public sealed class RulePack

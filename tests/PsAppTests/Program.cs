@@ -129,6 +129,40 @@ leaguesGroup.SetSelection(false);
 if (leaguesGroup.IsSelected != false || leaguesGroup.Categories.Any(c => c.IsSelected))
     throw new Exception("clear whole group failed");
 
+// ---------------------------------------------------------------------------
+// Rows are bilingual; 语言 decides which side leads
+// ---------------------------------------------------------------------------
+var languageBox = window.FindControl<ComboBox>("LanguageBox") ?? throw new Exception("LanguageBox missing");
+var fireZh = skillsGroup.Categories.Single(c => c.Id == "skill.fire");
+if (fireZh.Label != "火焰" || fireZh.LabelSecondary != "Fire" || fireZh.CountText != "1 个文件")
+    throw new Exception($"zh row should read 火焰 / Fire with a Chinese count: {fireZh.Label} | {fireZh.LabelSecondary} | {fireZh.CountText}");
+
+// The shipped table overrides what the pack stored, which is how old rule packs get current
+// wording without a GGPK re-scan.
+var mtxZh = groups.Single(g => g.Group == "mtx").Categories.Single(c => c.Id == "mtx.spells");
+if (mtxZh.Label != "技能外观" || mtxZh.LabelSecondary != "MTX")
+    throw new Exception($"label table should win over the pack's own zh: {mtxZh.Label} | {mtxZh.LabelSecondary}");
+
+languageBox.SelectedItem = "en";
+Dispatcher.UIThread.RunJobs();
+var fireEn = groups.Single(g => g.Group == "skills").Categories.Single(c => c.Id == "skill.fire");
+if (fireEn.Label != "Fire" || fireEn.LabelSecondary != "火焰" || fireEn.CountText != "1 files")
+    throw new Exception($"en should lead with the English name: {fireEn.Label} | {fireEn.LabelSecondary} | {fireEn.CountText}");
+languageBox.SelectedItem = "zh";
+Dispatcher.UIThread.RunJobs();
+
+// The search box matches both languages whichever one is primary.
+searchBox.Text = "迷雾";
+Dispatcher.UIThread.RunJobs();
+if (groups.Count != 1 || groups[0].Group != "leagues")
+    throw new Exception($"searching in Chinese failed: {groups.Count} groups");
+searchBox.Text = "Delirium";
+Dispatcher.UIThread.RunJobs();
+if (groups.Count != 1 || groups[0].Group != "leagues")
+    throw new Exception($"searching in English while zh is selected failed: {groups.Count} groups");
+searchBox.Text = "";
+Dispatcher.UIThread.RunJobs();
+
 searchBox.Text = "fire";
 Dispatcher.UIThread.RunJobs();
 if (groups.Count != 1 || groups[0].Group != "skills")
@@ -219,6 +253,11 @@ if (!selectionText.Text!.Contains("已选 1/1"))
     throw new Exception($"unknown preset should fall back to all-selected: {selectionText.Text}");
 if (!applyButton.IsEnabled)
     throw new Exception("apply should stay enabled while rows are selected");
+
+// A pack with no zh at all must show the name once, not "Fx / Fx".
+var foreignRow = groups.SelectMany(g => g.Categories).Single(c => c.Id == "fx.spells.fire");
+if (foreignRow.Label != "Fx" || foreignRow.LabelSecondary != null || foreignRow.FullLabel != "Fx")
+    throw new Exception($"english-only pack should not repeat itself: {foreignRow.FullLabel}");
 
 // known preset that matches zero categories: amber warning + Apply disabled + honest count
 var foreignSafe = Path.Combine(home, "rulepacks", "foreign-safe.json");

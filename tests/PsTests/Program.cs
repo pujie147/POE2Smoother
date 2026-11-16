@@ -146,6 +146,88 @@ Check("rules: safe excludes monsters", !safeIds.Contains("monsters"));
 Check("rules: safe excludes leagues", !safeIds.Contains("league.delirium"));
 
 // ---------------------------------------------------------------------------
+// Effect labels (zh table + bilingual pairing)
+// ---------------------------------------------------------------------------
+Check("labels: shipped table loads", EffectLabels.Count >= 200, $"count={EffectLabels.Count}");
+Check("labels: every key looks like group.slug",
+    EffectLabels.All.Keys.All(k => k.Contains('.') && !k.Contains(' ') && k == k.ToLowerInvariant()));
+Check("labels: every value carries Chinese",
+    EffectLabels.All.Values.All(v => v.Any(ch => ch >= 0x4E00 && ch <= 0x9FFF)));
+
+// The table resolves at display time, so an already-built pack gets the new wording without a
+// GGPK re-scan — including when the pack itself carries a different (older) zh string.
+var labelled = new RuleCategory
+{
+    Id = "mtx.spells",
+    Group = "mtx",
+    Label = new Dictionary<string, string> { ["zh"] = "旧名", ["en"] = "MTX: Spells" }
+};
+Check("labels: table wins over the pack's zh", labelled.LabelFor("zh") == "技能外观", labelled.LabelFor("zh"));
+Check("labels: en still comes from the pack", labelled.LabelFor("en") == "MTX: Spells");
+var zhFirst = labelled.LabelPair("zh");
+var enFirst = labelled.LabelPair("en");
+Check("labels: zh puts Chinese first", zhFirst.Primary == "技能外观" && zhFirst.Secondary == "MTX: Spells");
+Check("labels: en flips the order", enFirst.Primary == "MTX: Spells" && enFirst.Secondary == "技能外观");
+
+// Ids the table does not cover must fall back to the pack, not to an empty cell.
+var uncatalogued = new RuleCategory
+{
+    Id = "skill.fire",
+    Group = "skills",
+    Label = new Dictionary<string, string> { ["zh"] = "火焰", ["en"] = "Fire" }
+};
+Check("labels: uncatalogued id keeps the pack label", uncatalogued.LabelFor("zh") == "火焰");
+
+// The prefix fallback puts the English name inside the Chinese label, so a real translation must
+// still show both sides while "技能: X / X" must not print X twice — on the live client that would
+// double ~650 of the 992 rows.
+var prefixed = new RuleCategory
+{
+    Id = "skill.mystery_thing",
+    Group = "skills",
+    Label = new Dictionary<string, string> { ["zh"] = "技能: Mystery Thing", ["en"] = "Mystery Thing" }
+};
+var prefixedZh = prefixed.LabelPair("zh");
+var prefixedEn = prefixed.LabelPair("en");
+Check("labels: prefix fallback does not repeat the name",
+    prefixedZh.Primary == "技能: Mystery Thing" && prefixedZh.Secondary == null);
+Check("labels: en-led fallback does not repeat the name either",
+    prefixedEn.Primary == "Mystery Thing" && prefixedEn.Secondary == null);
+var translated = new RuleCategory
+{
+    Id = "mtx.spells",
+    Group = "mtx",
+    Label = new Dictionary<string, string> { ["zh"] = "外观", ["en"] = "MTX: Spells" }
+};
+Check("labels: a real translation still pairs",
+    translated.LabelPair("zh").Secondary == "MTX: Spells");
+var englishOnly = new RuleCategory
+{
+    Id = "skill.something_odd",
+    Group = "skills",
+    Label = new Dictionary<string, string> { ["en"] = "Fx" }
+};
+var englishOnlyPair = englishOnly.LabelPair("zh");
+Check("labels: identical zh/en hides the secondary",
+    englishOnlyPair.Primary == "Fx" && englishOnlyPair.Secondary == null);
+
+// A skill folder the table has not learned yet must still read as Chinese-framed, which is the
+// whole point: on the live client ~650 of 992 categories are spell folders.
+var (tailPack, _) = RulePackBuilder.Build(["metadata/effects/spells/mystery_thing/a.ao"], "Tail", "test");
+Check("labels: unknown skill gets a Chinese prefix",
+    tailPack.Categories.First(c => c.Id == "skill.mystery_thing").Label["zh"].StartsWith("技能: "),
+    tailPack.Categories.First(c => c.Id == "skill.mystery_thing").Label["zh"]);
+
+// Loose shaders under materials/environment have a filename as their first segment; the extension
+// must not leak into the row ("环境材质: Rainshader.Fxgraph").
+var (shaderPack, _) = RulePackBuilder.Build(["metadata/materials/environment/rainshader.fxgraph"], "Shader", "test");
+var shader = shaderPack.Categories.First(c => c.Id == "env.rainshader.fxgraph");
+Check("labels: file extension hidden from the name",
+    shader.Label["en"] == "Environment material: Rainshader" &&
+    shader.Label["zh"] == "环境材质: Rainshader", $"{shader.Label["zh"]} | {shader.Label["en"]}");
+Check("labels: id keeps the extension so old presets still match", shader.Id == "env.rainshader.fxgraph");
+
+// ---------------------------------------------------------------------------
 // Path helpers
 // ---------------------------------------------------------------------------
 var tempRoot = TestIndexBuilder.NewRoot("paths");

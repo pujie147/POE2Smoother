@@ -356,11 +356,21 @@ public partial class MainWindow : Window
 
         foreach (var category in _pack.Categories)
         {
+            var (primary, secondary) = category.LabelPair(language);
             var row = new CategoryRow
             {
                 Id = category.Id,
                 Group = category.Group,
-                Label = category.LabelFor(language),
+                Label = primary,
+                LabelSecondary = secondary,
+                EnglishCounts = language.Equals("en", StringComparison.OrdinalIgnoreCase),
+                // Both languages, never just the displayed one: typing 火球 or stormblast should find
+                // the same row regardless of what the language dropdown is set to.
+                SearchText = string.Join(' ', new[]
+                {
+                    category.LabelFor("zh"), category.LabelFor("en"), category.Id, category.Group,
+                    GroupLabel(category.Group)
+                }).ToLowerInvariant(),
                 Count = category.Rules.Count,
                 Paths = category.Rules.Select(r => r.Path).ToList(),
                 IsSelected = patterns.Any(pattern => PresetSelector.Matches(category.Id, pattern))
@@ -463,9 +473,7 @@ public partial class MainWindow : Window
         if (query.Length == 0)
             return true;
 
-        return row.Label.Contains(query, StringComparison.OrdinalIgnoreCase) ||
-               row.Id.Contains(query, StringComparison.OrdinalIgnoreCase) ||
-               row.Group.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+        return row.SearchText.Contains(query.ToLowerInvariant()) ||
                row.Paths.Any(path => path.Contains(query, StringComparison.OrdinalIgnoreCase));
     }
 
@@ -1137,10 +1145,22 @@ public sealed class CategoryRow : INotifyPropertyChanged
 
     public string Id { get; init; } = "";
     public string Label { get; init; } = "";
+
+    /// <summary>The other language, or null when both sides would say the same thing.</summary>
+    public string? LabelSecondary { get; init; }
+    public bool HasSecondary => LabelSecondary != null;
+    public string FullLabel => LabelSecondary == null ? Label : $"{Label} / {LabelSecondary}";
+
+    /// <summary>Lower-cased zh+en+id+group, so a search hits either language whichever one is primary.</summary>
+    public string SearchText { get; init; } = "";
+
     public string Group { get; init; } = "";
     public int Count { get; init; }
     public IReadOnlyList<string> Paths { get; init; } = [];
-    public string CountText => $"{Count} files";
+
+    /// <summary>Row language follows the 语言 setting like the label does; "files" alone looked out of place.</summary>
+    public string CountText => EnglishCounts ? $"{Count} files" : $"{Count} 个文件";
+    public bool EnglishCounts { get; init; }
 
     public bool IsSelected
     {

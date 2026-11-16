@@ -30,15 +30,20 @@ internal static class ListRulesCommand
                 pack.GeneratedAt,
                 pack.RuleCount,
                 presets = pack.Presets,
-                categories = pack.Categories.Select(c => new
+                categories = pack.Categories.Select(c =>
                 {
-                    c.Id,
-                    c.Group,
-                    label = c.LabelFor(language),
-                    rules = c.Rules.Count,
-                    experimental = c.Rules.Count(r => r.Experimental),
-                    fx = c.Rules.Count(r => r.Tier == RiskTier.Fx),
-                    material = c.Rules.Count(r => r.Tier == RiskTier.Material)
+                    var (label, secondary) = c.LabelPair(language);
+                    return new
+                    {
+                        c.Id,
+                        c.Group,
+                        label,
+                        labelSecondary = secondary,
+                        rules = c.Rules.Count,
+                        experimental = c.Rules.Count(r => r.Experimental),
+                        fx = c.Rules.Count(r => r.Tier == RiskTier.Fx),
+                        material = c.Rules.Count(r => r.Tier == RiskTier.Material)
+                    };
                 })
             }, new JsonSerializerOptions { WriteIndented = true }));
             return 0;
@@ -64,10 +69,18 @@ internal static class ListRulesCommand
                 var suffix = fx + material > 0
                     ? $" ({fx} fx · {material} material)"
                     : "";
-                Console.WriteLine($"  {category.Id,-28} {category.Rules.Count,6}  {category.LabelFor(language)}{suffix}");
+                var (label, secondary) = category.LabelPair(language);
+                var both = secondary == null ? label : $"{label} / {secondary}";
+                Console.WriteLine($"  {category.Id,-34} {category.Rules.Count,6}  {both}{suffix}");
             }
         }
 
+        // The maintenance signal for PsRules/Labels/labels-zh.json: without it there is no way to
+        // tell a thin table from a saturated one while the list keeps growing with each client build.
+        var curated = pack.Categories.Count(c => EffectLabels.Has(c.Id));
+        Console.WriteLine();
+        Console.WriteLine($"词表已收录 {curated}/{pack.Categories.Count} 类(表内 {EffectLabels.Count} 条),其余显示「技能: X」式中文前缀 / " +
+                          $"{curated} of {pack.Categories.Count} categories have a curated zh name ({EffectLabels.Count} table entries).");
         return 0;
     }
 }

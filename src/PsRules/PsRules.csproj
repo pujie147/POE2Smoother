@@ -6,6 +6,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Embedded so the label table travels in the DLL: AppImage/portable packaging stays untouched. -->
+    <EmbeddedResource Include="Labels/labels-zh.json" />
+  </ItemGroup>
+
+  <ItemGroup>
     <InternalsVisibleTo Include="pstests" />
   </ItemGroup>
 

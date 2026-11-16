@@ -179,9 +179,12 @@
                         <ItemsControl ItemsSource="{Binding Categories}">
                           <ItemsControl.ItemTemplate>
                             <DataTemplate>
-                              <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay}" Margin="8,3">
+                              <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay}" Margin="8,3"
+                                        ToolTip.Tip="{Binding FullLabel}">
                                 <StackPanel Orientation="Horizontal" Spacing="12">
-                                  <TextBlock Text="{Binding Label}" Width="620" TextTrimming="CharacterEllipsis"/>
+                                  <TextBlock Text="{Binding Label}" MaxWidth="460" TextTrimming="CharacterEllipsis"/>
+                                  <TextBlock Text="{Binding LabelSecondary}" IsVisible="{Binding HasSecondary}"
+                                             Foreground="#8E97A6" MaxWidth="320" TextTrimming="CharacterEllipsis"/>
                                   <TextBlock Text="{Binding CountText}" Foreground="#8E97A6"/>
                                 </StackPanel>
                               </CheckBox>
@@ -203,7 +206,7 @@
 
           <TextBlock Grid.Row="2" x:Name="EffectsHint" Margin="0,8,0,0"
                      Foreground="#AAB2C0" TextWrapping="Wrap"
-                     Text="按分类分组显示；搜索会匹配类别名称、ID 和规则路径。Safe 默认只处理玩家技能/MTX，保留怪物和危险机制。"/>
+                     Text="按分类分组显示，每行同时给出中英文名(顺序跟设置页「语言」走)；搜索会匹配两种语言的名称、ID 和规则路径。没有中文名的技能显示「技能: 原名」。Safe 默认只处理玩家技能/MTX，保留怪物和危险机制。"/>
         </Grid>
       </TabItem>
 

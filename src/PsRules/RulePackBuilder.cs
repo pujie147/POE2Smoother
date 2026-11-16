@@ -32,6 +32,14 @@ public static class RulePackBuilder
         ["monsters_effects"] = ("怪物技能", "Monster skills")
     };
 
+    /// <summary>
+    /// Asset extensions a segment may end with — the loose shaders under
+    /// <c>metadata/materials/environment/</c> have no sub-folder, so their "segment" is a whole
+    /// filename. Listed here and switched on in <see cref="TryGetStrategy"/>: keep the two in step.
+    /// </summary>
+    private static readonly HashSet<string> LabelHiddenExtensions =
+        new(StringComparer.OrdinalIgnoreCase) { "ao", "dds", "pet", "epk", "mat", "fxgraph", "aoc", "header" };
+
     public static (RulePack Pack, RulePackBuildStats Stats) Build(
         IEnumerable<string> paths,
         string name = "PoE2 Core Effects",
@@ -175,7 +183,9 @@ public static class RulePackBuilder
             var seg = FirstSegment(rest);
             if (SkillLabels.TryGetValue(seg, out var labels))
                 return ($"skill.{Slug(seg)}", "skills", labels.Zh, labels.En);
-            return ($"skill.{Slug(seg)}", "skills", Pretty(seg), Pretty(seg));
+            // The zh slot must stay Chinese: on the real client ~650 spell folders land here, and
+            // putting English in both slots is what made the effects list read as English-only.
+            return ($"skill.{Slug(seg)}", "skills", "技能: " + Pretty(seg), Pretty(seg));
         }
 
         const string mtx = "metadata/effects/microtransactions/";
@@ -237,11 +247,23 @@ public static class RulePackBuilder
         return string.IsNullOrEmpty(slug) ? "other" : slug;
     }
 
+    /// <summary>
+    /// Display-only prettifier. Drops the file extension: the material/environment root keeps its
+    /// shaders loose in one folder, so their first segment is a whole filename and rows otherwise
+    /// read "环境材质: Rainshader.Fxgraph". The category id still carries the extension, so existing
+    /// presets and profiles keep matching.
+    /// </summary>
     private static string Pretty(string value)
     {
         if (string.IsNullOrWhiteSpace(value))
             return "Other";
-        var text = value.Replace('_', ' ').Replace('-', ' ').Trim();
+
+        var text = value.Trim();
+        var dot = text.LastIndexOf('.');
+        if (dot > 0 && LabelHiddenExtensions.Contains(text[(dot + 1)..]))
+            text = text[..dot];
+
+        text = text.Replace('_', ' ').Replace('-', ' ').Trim();
         return System.Globalization.CultureInfo.InvariantCulture.TextInfo.ToTitleCase(text);
     }
 }

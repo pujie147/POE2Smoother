@@ -6,6 +6,30 @@
 This file is the source of truth for release notes. Pushing a `vX.Y.Z` tag makes CI build the AppImage
 and publish the matching section below as the release body — keep the heading exactly equal to the tag.
 
+## v1.4 – 未发布 / unreleased
+
+### 新增 / Added
+
+- **特效页的类别勾选改成中英双语**:每行现在是「中文 / English」,顺序跟设置页「语言」走
+  (选 en 则英文名在前)。之前每行只显示一种语言,而中文模式下大多数技能行显示的其实是英文目录名
+  ——真机 992 个类别里 656 个是技能目录,旧代码只在 `SkillLabels` 里备了 9 个元素名,其余一律中英文同串。
+  *Every category row on the Effects tab now shows both languages, ordered by the Language setting.
+  Previously one language per row, and for most skill folders the "Chinese" side was the English
+  folder name: 656 of the 992 live categories are spell folders while only 9 element names were known.*
+- 中文名来自新增的随包词表 `src/PsRules/Labels/labels-zh.json`(305 条,以类别 Id 为键,嵌进 DLL)。
+  词表在**显示期**解析、不写回规则包,所以**旧规则包不用重新生成**就能看到新名字(重新生成要重扫整个 GGPK)。
+  没收录的技能走中文前缀兜底:「技能: Crossbow Ballistas」。松散 shader 的名字不再带 `.fxgraph` 尾巴
+  (类别 Id 保持不变,已有预设与档案照旧匹配)。搜索框两种语言都命中(输 `迷雾` 或 `Delirium` 同一个结果),
+  行数统计也跟着语言:`128 个文件` / `128 files`。`pscli list-rules` 同步双语输出,并打印
+  「词表已收录 N/M」——补词表时就看这个数。
+  *Shipped `labels-zh.json` (305 ids, embedded) resolves at display time, so existing rule packs show
+  the new names without a rebuild; unknown skills fall back to a Chinese prefix, and the CLI prints
+  table coverage so the list can keep growing.*
+- 已知不足:客户端自带的中文只有繁體、且以压缩的 `.datc64` 存放(`data/balance/traditional chinese/`,
+  219 张表),本期未接入,技能长尾仍是英文原名。
+  *The client's own Chinese is Traditional-only and stored as compressed `.datc64` tables; mining it is
+  still ahead of us, so the skill long tail keeps its English folder name.*
+
 ## v1.3 – 2026-11-16
 
 ### 变更 / Changed
