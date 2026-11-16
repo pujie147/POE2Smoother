@@ -12,6 +12,7 @@ and gives the framerate and the thermals back to what actually matters — the g
 - Effects are grouped by category — **skills / appearance / monsters / leagues (Abyss, Delirium, Splinter… 9 groups) / environment / other** — searchable by name, ID or path, whole groups toggle in one click
 - Four presets **Safe / Clean / Performance / Full**, plus free category combinations, an editable ignore list, and saved profiles
 - Apply, status check, game-update detection, one-click restore; the original index is backed up before every apply
+- **Render compression (experimental, off by default)**: another path that keeps visuals but lowers render load — same-resolution BC7→BC1 textures, official mesh LOD swap, shader simplification, mesh decimation (strength slider), plus an aggressive downscale option; mutually exclusive with blanking, touches only `.dds`/`.fxgraph`/`.fmt`, never `.pet` configs
 - Bilingual UI (中文 / English), large text, gamepad/keyboard operable, tuned for the Steam Deck / Ally 1280×800
 - Touches local client files only: no memory injection, no reading or writing the game process
 
@@ -63,7 +64,24 @@ offers "Run as admin" in the top-right corner.
 
 2. **Home → Detect**: finds the game directory automatically and shows where `Bundles2/_.index.bin` or `Content.ggpk` lives, labelled with its type (Steam / standalone). If it can't, pick the file with **Browse**, or point it there with the `POE2_INDEX` / `POE2_GGPK` / `POE2_ROOT` environment variables (never run detection as sudo / administrator).
 3. **Build rules**: scans the index of **your own current client** to produce the list of suppressible effects — the rule pack does not depend on anyone's fixed list, so regenerating it once after a game update is enough.
-4. **Effects tab → pick a preset**: newcomers should use `safe` (the default), which only touches player skill and appearance effects and keeps every monster, boss and dangerous-mechanic effect.
+4. **Effects tab → pick a preset**: the preset selects **categories** (which skills, leagues, environment), so newcomers should use `safe` (the default), which only touches player skill and appearance effects and keeps every monster, boss and dangerous-mechanic effect.
+   Going further on render load is what the two drop-downs in the same row do — **Risk tier** and **Write strategy**. Two recommended combinations:
+
+   - **`safe` + Risk tier "+ blank effects (.pet/.epk/.fxgraph)" + Write strategy "valid empty resource"** — the first choice. What gets blanked is the effect's own
+     `.pet` / `.epk` / `.fxgraph`, and effect drawing is where the render overhead actually is: once those files become a minimal valid empty resource they stop producing draws,
+     which should save more frames than script surgery alone. Ground, characters and UI still render normally, so the **gain has a ceiling**, and it has not been verified in game yet.
+     Note the Risk tier is a **ceiling, not a switch** — at this tier the `.ao` surgery from "Safe: script surgery only" is already included, there is nothing to enable twice.
+   - **`safe` + Risk tier "+ blank materials (.mat)" + Write strategy "valid empty resource"** — on top of the above, this also blanks over 50,000 `.mat` files,
+     so the volume is larger. Materials are shared with ordinary rendering (ground, characters, objects), so **normal geometry can black out too**; the frame-rate delta is usually
+     smaller than the previous option while the risk is genuinely one tier higher: the UI asks for a second confirmation and lists the original bytes that will be discarded.
+   - Keep "valid empty resource" for both (it is already the default) and don't go back to "0-byte file": the legal empty shapes are taken from the client's own same-shaped
+     files, so "the blanked file is harmless" does not depend on the one thing we cannot know — who else references it.
+   - The way back is **Home → Restore scope**: "Experimental only" or "Materials only" keeps the script surgery in place.
+
+   > ⚠ **Neither combination gets you render compression.** While the write strategy is "valid empty resource" / "0-byte file", the "Render compression" panel does not appear
+   > on the Effects tab at all; while the risk tier is "Safe: script surgery only", every compression target is skipped by design even with the panel open and all switches on (it counts under `skippedExp` in `plan`).
+   > To take the compression path instead, switch the write strategy to "Compress, else valid empty" or "Render-compress only" and raise the risk tier to match
+   > (texture compression is material-tier, mesh and shader compression is fx-tier); until you do, the two combinations above are the best available.
 5. **(Optional tuning)**: search which group an effect belongs to, tick or untick whole groups, add paths you never want touched to the ignore list, and save the selection as a profile to load next time.
 6. **Home → Apply**: backs up first, then writes (the button requires a double-click to confirm). The matching effects disappear in game. If it reports "0 files changed", the tool tells you why (stale rule pack, everything ignored, current risk tier excludes those assets…) and what to do next.
 7. **Verify in game**. To get the full visuals back: **Home → Restore** (also double-click to confirm) — everything comes back from the backup, and you can re-apply at any time.
@@ -74,9 +92,13 @@ offers "Run as admin" in the top-right corner.
 ./pscli detect                      # locate the game
 ./pscli build-rules                 # build a rule pack from the current index
 ./pscli plan   --preset safe        # preview how many files would change (writes nothing)
-./pscli apply  --preset safe --yes  # apply (backs up first)
+./pscli apply  --preset safe --yes  # apply (backs up first; = risk tier "Safe: script surgery only")
 ./pscli status                      # current status
 ./pscli restore --yes               # restore everything
+
+# the two recommended combinations above (--blank-style template is already the default; spelled out for clarity)
+./pscli apply  --preset safe --experimental fx       --blank-style template --yes
+./pscli apply  --preset safe --experimental material --blank-style template --yes
 ```
 
 If auto-detection fails, append `--index <.../Bundles2/_.index.bin>`, `--game <game root>` or
@@ -92,15 +114,45 @@ If auto-detection fails, append `--index <.../Bundles2/_.index.bin>`, `--game <g
   **experimental** strategy, off by default, and split into two separate tiers: `fx` blanks only effect
   resources, `material` is the one that touches materials — those are shared with ordinary rendering
   (ground, characters, objects), so blanking them can black out normal geometry too. Keep the scale in mind:
-  one measured `safe` + all-experimental run on this machine wrote **73,581 zero-byte files**
-  (`.mat` 50,399 / `.pet` 15,556 / `.epk` 5,054 / `.fxgraph` 2,572). In the GUI it is a "risk tier" drop-down
-  (choosing material asks for a second, in-window confirmation listing the bytes that will be destroyed);
-  on the CLI it is `--experimental fx|material`, and the old `--include-experimental` is exactly
-  `--experimental material`, so its meaning did not narrow. If a tier turns out to be too much, you can undo
-  just the materials and keep the script surgery: the "Restore scope" box on the Home tab, or
-  `pscli restore --undo-tiers material`. Details, plus the safer alternatives that are *not* implemented yet,
+  one measured `safe` + all-experimental run on this machine touched **73,581 files**
+  (`.mat` 50,399 / `.pet` 15,556 / `.epk` 5,054 / `.fxgraph` 2,572). A blanked file is replaced with the
+  **minimal valid empty resource of its format** (2–42 bytes, shaped after the client's own
+  `empty.epk` / `00_null.pet` / `empty.mat`, not invented), rather than 0 bytes — that way "the blanked file
+  is harmless" does not depend on the one thing we cannot know: who else references it. The old 0-byte
+  behaviour is still reachable via the "write strategy" box / `--blank-style empty`. In the GUI the tier is a
+  drop-down (choosing material asks for a second, in-window confirmation listing the original bytes that
+  will be discarded); on the CLI it is `--experimental safe|fx|material`, and the old `--include-experimental` is
+  exactly `--experimental material`, so its meaning did not narrow. If a tier turns out to be too much, you
+  can undo just the materials and keep the script surgery: the "Restore scope" box on the Home tab, or
+  `pscli restore --undo-tiers material`; `pscli health` (read-only) crosses asset-path warnings in the
+  client log against the files this run wrote. Details, plus the alternatives that are *not* implemented yet,
   are in [`docs/experimental-risk-tiers.md`](docs/experimental-risk-tiers.md).
 - The default ignore list protects monsters, bosses and dangerous-mechanic assets, so the picture actually becomes *easier* to read once suppressed: you can see which ground effects you are standing in.
+
+## Render compression (experimental, off by default)
+
+Besides blanking, the tool offers a path that **keeps visuals while lowering render load**: render
+compression. In the Effects tab these are independent toggles (plus a decimation-strength slider and an
+aggressive downscale option), **all off by default**; a change requires both the risk tier and the switch.
+Once a class is compressed it is no longer blanked (the two are mutually exclusive).
+
+| Toggle | Effect | Tier | Notes |
+|---|---|---|---|
+| Texture same-res | `.dds` BC7→BC1 | material | Resolution & UV unchanged, ~-50%; only opaque/cutout, **smooth alpha (soft particles) skipped** |
+| Downscale (aggressive) | Halve resolution on top of texture compression | material | Soft particles go to BC3 keeping soft edges (-75%), opaque to BC1 (-87%); **changes atlas UV cropping — in-game A/B first** |
+| Mesh LOD | `.fmt` official LOD00→LOD1/2 | fx | Replaced with the official lower-detail sibling, safest |
+| Mesh decimate | `.fmt` vertex-clustering decimation | fx | Strength slider 0–100; billboards/quads skipped |
+| Shader simplify | `.fxgraph` whitelisted graphs → minimal template | fx | Still renders a recognizable effect, highest risk |
+
+CLI equivalents: `--compress-tex` / `--tex-downscale` / `--compress-shader` / `--mesh-lod` / `--mesh-decimate <0-100>`.
+
+Only effect meshes / particle textures / whitelisted shaders are processed; **monsters and gameplay telegraphs
+are skipped** (silhouette and motion are themselves direction information), and **`.pet` configs are never
+modified** (they affect skill range/hit detection). All writes reuse the existing backup/verify/restore chain
+with zero-change restore. The texture codecs are verified byte-for-byte offline (BC7 decode against an
+independent Python port matches on 26 real samples / 246 mips), but **"the client accepts it + visuals stay
+recognizable + skill range is unchanged" still needs in-game A/B before promotion** — steps in
+[`docs/experimental-risk-tiers.md`](docs/experimental-risk-tiers.md) §7.3.
 
 ## Preset cheat sheet
 
@@ -157,8 +209,9 @@ passes it in with `-p:Version=`, which is what both the GUI title and `pscli ver
 build with no tag reports `0.0.0-dev`. To pin a version by hand: `PS_VERSION=1.2.3 bash scripts/build-linux.sh`.
 
 Known limitations: two client layouts are supported — the Steam version and the standalone `Content.ggpk`
-(experimental); the experimental empty-out strategy is off by default, and it writes zero bytes rather than a
-per-extension minimal valid empty resource (the material tier is the riskiest of them — see
-`docs/experimental-risk-tiers.md`); neither Windows nor Linux artifacts
+(experimental); the experimental empty-out strategy is off by default (the material tier is the riskiest of
+them), and "a valid empty resource really is harmless to rendering and loading" currently rests on the
+client shipping same-shaped files, not on a verified in-game run — `pscli health` exists for exactly that
+(see `docs/experimental-risk-tiers.md`); neither Windows nor Linux artifacts
 are code-signed. Check the license terms of LibGGPK3 / LibBundledGGPK3 (AGPL-3.0-or-later) before
 redistributing or commercial use.
