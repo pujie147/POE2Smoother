@@ -57,6 +57,8 @@ internal static class ProfileCommand
                     Ignore = ignore.Prefixes.ToList()
                 };
                 profile.SetTier(CommandUtil.ResolveTier(args));
+                profile.Compression = CommandUtil.ResolveCompression(args, null);
+                profile.SetWriteStrategy(CommandUtil.ResolveWriteStrategy(args, null));
                 store.Save(profile);
                 Console.WriteLine($"saved profile: {name}");
                 return 0;

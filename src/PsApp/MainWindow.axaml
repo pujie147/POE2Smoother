@@ -71,7 +71,7 @@
                     CornerRadius="8" Padding="12">
               <StackPanel Spacing="8">
                 <TextBlock x:Name="MaterialConfirmText" TextWrapping="Wrap" FontWeight="SemiBold"/>
-                <TextBlock TextWrapping="Wrap" Foreground="#D8C4B0"
+                <TextBlock x:Name="MaterialConfirmWarning" TextWrapping="Wrap" Foreground="#D8C4B0"
                   Text="材质被置空后,普通渲染(地面/角色/物体)可能一起变黑或缺失;工具会先备份,之后可以只撤销材质。 / Blanking materials can also black out ordinary rendering (ground, characters, objects). A backup is always written first, and materials can be restored on their own afterwards."/>
                 <StackPanel Orientation="Horizontal" Spacing="10">
                   <Button x:Name="MaterialConfirmButton" Content="确认置空材质 / Confirm material blanking"
@@ -104,7 +104,11 @@
               <TextBlock Text="风险档 / Risk tier" VerticalAlignment="Center" FontWeight="SemiBold"/>
               <ComboBox x:Name="TierBox" Width="320" Height="42"
                         SelectionChanged="OnTierChanged"
-                        ToolTip.Tip="置空策略的风险上限 / Ceiling for the zero-byte blanking strategies"/>
+                        ToolTip.Tip="置空策略的风险上限 / Ceiling for the blanking strategies"/>
+              <TextBlock Text="写法策略 / Write strategy" VerticalAlignment="Center" FontWeight="SemiBold"/>
+              <ComboBox x:Name="BlankStyleBox" Width="360" Height="42"
+                        SelectionChanged="OnWriteStrategyChanged"
+                        ToolTip.Tip="置空与压缩如何配合:置空(合法空资源 / 0字节)、只渲染压缩、或先压缩无法压缩则置空 / How blanking and compression combine: blank (valid empty / 0-byte), compress only, or compress first then blank if impossible"/>
             </StackPanel>
 
             <StackPanel Orientation="Horizontal" Spacing="8">
@@ -124,6 +128,38 @@
                       ToolTip.Tip="取消所有类别 / Clear all categories"/>
               <TextBlock x:Name="SelectionText" VerticalAlignment="Center" Foreground="#AAB2C0"/>
             </StackPanel>
+
+            <Border x:Name="CompressionPanel" IsVisible="False" Background="#1C2026" CornerRadius="8" Padding="12,10">
+              <StackPanel Spacing="6">
+                <TextBlock Text="渲染压缩 / Render compression — 实验性,保留视觉,需实机验证 / experimental, keeps visuals, verify in game"
+                           FontWeight="SemiBold" Foreground="#E5A64A" TextWrapping="Wrap"/>
+                <StackPanel Orientation="Horizontal" Spacing="16">
+                  <CheckBox x:Name="CompressTexCheck" Content="贴图同分辨率 / Texture same-res"
+                            Checked="OnCompressionChanged" Unchecked="OnCompressionChanged"
+                            ToolTip.Tip="BC7→BC1:分辨率与 UV 不变,约 -50%;需 material 档,只压 opaque/cutout、平滑 alpha 跳过 / needs material tier; opaque/cutout only, smooth alpha skipped"/>
+                  <CheckBox x:Name="TexDownscaleCheck" Content="降分辨率(激进)/ Downscale 2×"
+                            Checked="OnCompressionChanged" Unchecked="OnCompressionChanged"
+                            ToolTip.Tip="再降一半分辨率:软粒子转 BC3 保留柔和边缘(-75%)、opaque 用 BC1(-87%);会改变图集 UV 切取,先实机 A/B / halve resolution: soft particles keep soft edges via BC3 (-75%), opaque via BC1 (-87%); changes atlas UV cropping — in-game A/B first"/>
+                  <CheckBox x:Name="CompressShaderCheck" Content="shader 精简 / Simplify shaders"
+                            Checked="OnCompressionChanged" Unchecked="OnCompressionChanged"
+                            ToolTip.Tip="白名单 .fxgraph 换成已知良好的精简图;需 fx 档 / whitelisted .fxgraph → known-good simple graphs; needs fx tier"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Spacing="16">
+                  <CheckBox x:Name="MeshLodCheck" Content="网格 LOD 替换 / Mesh LOD swap"
+                            Checked="OnCompressionChanged" Unchecked="OnCompressionChanged"
+                            ToolTip.Tip="特效网格换成官方 LOD1/LOD2(存在时);需 fx 档 / official lower LOD when present; needs fx tier"/>
+                  <CheckBox x:Name="MeshDecimateCheck" Content="网格减面 / Decimate meshes"
+                            Checked="OnCompressionChanged" Unchecked="OnCompressionChanged"
+                            ToolTip.Tip="顶点聚类减面(无 LOD 可用时);billboard 不减;需 fx 档 / vertex clustering; billboards untouched; needs fx tier"/>
+                  <TextBlock Text="强度 / Strength" VerticalAlignment="Center" Foreground="#AAB2C0"/>
+                  <Slider x:Name="DecimateSlider" Width="180" Minimum="0" Maximum="100" Value="50"
+                          VerticalAlignment="Center" ValueChanged="OnDecimateStrengthChanged"/>
+                  <TextBlock x:Name="DecimateValueText" Text="50" Width="32" VerticalAlignment="Center" Foreground="#AAB2C0"/>
+                </StackPanel>
+                <TextBlock x:Name="CompressionHint" Foreground="#8E97A6" FontSize="13" TextWrapping="Wrap"
+                           Text="只处理特效网格/粒子贴图/白名单 shader;跳过怪物与 Gameplay 预告;.pet 配置永不改动。候选先压缩:『先压缩则置空』策略下无法压缩的回退置空,『只渲染压缩』下保持原样。/ Effect meshes, particle textures and whitelisted shaders only; monsters/gameplay telegraphs skipped; .pet configs never touched. Candidates compress first: compress-then-* blanks the uncompressible, compress-only leaves them."/>
+              </StackPanel>
+            </Border>
           </StackPanel>
 
           <Grid Grid.Row="1">

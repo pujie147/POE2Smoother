@@ -18,7 +18,29 @@ public static class BackupManager
         HashUtil.AtomicCopy(backupPath, indexPath);
     }
 
-    public static string CustomBundleDir(string bundlesDir) => Path.Combine(bundlesDir, "LibGGPK3");
+    /// <summary>Name of the directory this tool's own bundles live in, under Bundles2 (or, for the
+    /// standalone client, inside Content.ggpk). Single source of truth: it appears in bundle paths
+    /// recorded in state.json, so both layouts and the "did we write this?" test key off it.</summary>
+    public const string CustomBundleDirName = "LibGGPK3";
+
+    public static string CustomBundleDir(string bundlesDir) => Path.Combine(bundlesDir, CustomBundleDirName);
+
+    /// <summary>
+    /// Whether a bundle path from the index points at content *this tool* wrote. Two layouts spell
+    /// the same directory differently (<c>LibGGPK3/0.bundle.bin</c> in a Steam index,
+    /// <c>Bundles2/LibGGPK3/…</c> inside a container), so match the directory component rather than
+    /// a prefix. This is how a plan can tell "already blanked by us" from "some official file that
+    /// happens to be the same length as one of our templates".
+    /// </summary>
+    public static bool IsCustomBundlePath(string? bundlePath)
+    {
+        if (string.IsNullOrEmpty(bundlePath))
+            return false;
+
+        var normalized = bundlePath.Replace('\\', '/');
+        return normalized.StartsWith(CustomBundleDirName + "/", StringComparison.OrdinalIgnoreCase) ||
+               normalized.StartsWith("Bundles2/" + CustomBundleDirName + "/", StringComparison.OrdinalIgnoreCase);
+    }
 
     public static IReadOnlyList<string> ListCustomBundleFiles(string bundlesDir)
     {

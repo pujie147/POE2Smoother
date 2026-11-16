@@ -107,19 +107,67 @@ internal static class CommandUtil
         return tiers;
     }
 
-    public static (string Preset, IgnoreList Ignore, RiskTier MaxTier, IReadOnlySet<string>? Categories)
-        ResolveSelection(ParsedArgs args, AppPaths paths)
+    /// <summary>
+    /// Which write strategy a command should use. The profile provides the baseline; an explicit
+    /// <c>--blank-style</c> wins. For backward compatibility, compression class flags given without
+    /// an explicit strategy promote a non-compression baseline to compress-then-template (so old
+    /// scripts still compress, and uncompressible files blank instead of being silently dropped);
+    /// an explicit non-compression strategy is respected, with a warning that the flags are inert.
+    /// </summary>
+    public static WriteStrategy ResolveWriteStrategy(ParsedArgs args, Profile? profile)
+    {
+        var requested = args.Get("blank-style");
+        var explicitStrategy = !string.IsNullOrWhiteSpace(requested);
+
+        WriteStrategy strategy;
+        if (explicitStrategy)
+        {
+            if (!WriteStrategies.TryParse(requested, out strategy))
+                throw new ArgumentException(
+                    $"unknown --blank-style value '{requested}' (template, empty, compress-only, " +
+                    "compress-then-template or compress-then-empty)");
+        }
+        else
+        {
+            strategy = profile?.EffectiveWriteStrategy() ?? WriteStrategy.Template;
+        }
+
+        var hasClassFlags = args.HasFlag("compress-tex") || args.HasFlag("tex-downscale")
+            || args.HasFlag("compress-shader") || args.HasFlag("mesh-lod") || args.HasFlag("mesh-decimate");
+        if (hasClassFlags && !WriteStrategies.IsCompressionContaining(strategy))
+        {
+            if (explicitStrategy)
+            {
+                Console.Error.WriteLine(
+                    $"warning: --blank-style {WriteStrategies.ToKey(strategy)} does not compress; " +
+                    "compression class flags are ignored. Use compress-only / compress-then-template / compress-then-empty.");
+            }
+            else
+            {
+                strategy = WriteStrategy.CompressThenTemplate;
+                Console.Error.WriteLine(
+                    "note: compression class flags given without --blank-style; using compress-then-template " +
+                    "(compress first, blank when impossible).");
+            }
+        }
+
+        return strategy;
+    }
+
+    public static (string Preset, IgnoreList Ignore, RiskTier MaxTier, IReadOnlySet<string>? Categories,
+        CompressionOptions Compression, Profile? Profile) ResolveSelection(ParsedArgs args, AppPaths paths)
     {
         var preset = args.Get("preset") ?? "safe";
         var ignore = LoadIgnore(args, paths);
         var maxTier = ResolveTier(args);
         IReadOnlySet<string>? categories = null;
+        Profile? profile = null;
 
         var profileName = args.Get("profile");
         if (!string.IsNullOrWhiteSpace(profileName))
         {
-            var profile = new ProfileStore(paths).Load(profileName)
-                          ?? throw new InvalidOperationException($"Profile not found: {profileName}");
+            profile = new ProfileStore(paths).Load(profileName)
+                      ?? throw new InvalidOperationException($"Profile not found: {profileName}");
             preset = profile.Preset;
             ignore = IgnoreList.FromLines(profile.Ignore);
             maxTier = profile.EffectiveTier();
@@ -135,13 +183,46 @@ internal static class CommandUtil
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
         }
 
-        return (preset, ignore, maxTier, categories);
+        return (preset, ignore, maxTier, categories, ResolveCompression(args, profile), profile);
+    }
+
+    /// <summary>
+    /// Compression toggles: the saved profile provides the baseline, explicit flags add to it.
+    /// Strength is validated here so a bad value fails before any index is opened.
+    /// </summary>
+    public static CompressionOptions ResolveCompression(ParsedArgs args, Profile? profile)
+    {
+        var options = (profile?.Compression ?? new CompressionOptions()).Clone();
+        if (args.HasFlag("compress-tex"))
+            options.Texture = true;
+        if (args.HasFlag("tex-downscale"))
+        {
+            options.Texture = true;
+            options.TextureDownscale = true;
+        }
+        if (args.HasFlag("compress-shader"))
+            options.Shader = true;
+        if (args.HasFlag("mesh-lod"))
+            options.MeshLod = true;
+        if (args.HasFlag("mesh-decimate"))
+            options.MeshDecimate = true;
+
+        var strength = args.Get("decimate-strength");
+        if (!string.IsNullOrWhiteSpace(strength))
+        {
+            if (!int.TryParse(strength, out var value) || value < 0 || value > 100)
+                throw new ArgumentException(
+                    $"unknown --decimate-strength value '{strength}' (expected 0-100)");
+            options.DecimateStrength = value;
+        }
+
+        return options;
     }
 
     public static ApplyRequest BuildApplyRequest(ParsedArgs args, AppPaths paths, GameLocation game,
         RulePack pack, string packPath)
     {
-        var (preset, ignore, maxTier, categories) = ResolveSelection(args, paths);
+        var (preset, ignore, maxTier, categories, compression, profile) = ResolveSelection(args, paths);
         return new ApplyRequest
         {
             Game = game,
@@ -150,6 +231,8 @@ internal static class CommandUtil
             Preset = preset,
             Ignore = ignore,
             MaxTier = maxTier,
+            WriteStrategy = ResolveWriteStrategy(args, profile),
+            Compression = compression,
             Force = args.HasFlag("force"),
             DryRun = args.HasFlag("dry-run"),
             CategoryFilter = categories

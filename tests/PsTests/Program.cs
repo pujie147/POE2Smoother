@@ -1,6 +1,7 @@
 using System.Text;
 using PsCore;
 using PsRules;
+using PsRules.Compression;
 using PsTests;
 
 var tests = 0;
@@ -727,14 +728,15 @@ Check("path: from game root -> index", Path.GetFullPath(fromRoot.IndexPath) == P
     const string ddsPath = "metadata/effects/spells/fire/tex.dds";
     var originalAo = "version 1\nAddAttached( 'metadata/effects/spells/fire/burn.pet', <root> );\nKeepThis();\n";
     // Every blanking strategy the "Experimental" checkbox gates.
+    // Sizes come from BlankAssert.Fixture so no fake original can ever land on a template's length.
     var blanking = new (string Path, byte[] Original)[]
     {
-        ("metadata/effects/spells/fire/burn.pet", new byte[] { 10, 20, 30, 40, 50 }),
-        ("metadata/effects/spells/fire/burn.epk", new byte[] { 1, 1, 1, 1, 1, 1, 1, 1 }),
-        ("metadata/effects/spells/fire/shield.mat", new byte[] { 7, 7, 7, 7 }),
-        ("metadata/effects/spells/fire/spark.fxgraph", new byte[] { 2, 2, 2 }),
-        ("metadata/effects/spells/fire/model.aoc", new byte[] { 4, 4 })
-    };
+        ("metadata/effects/spells/fire/burn.pet", null!),
+        ("metadata/effects/spells/fire/burn.epk", null!),
+        ("metadata/effects/spells/fire/shield.mat", null!),
+        ("metadata/effects/spells/fire/spark.fxgraph", null!),
+        ("metadata/effects/spells/fire/model.aoc", null!)
+    }.Select(b => (Path: b.Path, Original: BlankAssert.Fixture(b.Path))).ToArray();
     var fixture = new List<(string Path, byte[] Content)>
     {
         (aoPath, Encoding.UTF8.GetBytes(originalAo)),
@@ -811,18 +813,17 @@ Check("path: from game root -> index", Path.GetFullPath(fromRoot.IndexPath) == P
     using (var read = IndexSession.OpenReadOnly(game))
     {
         foreach (var b in blanking)
-            Check($"exp-on: {Path.GetFileName(b.Path)} blanked", LiveBytes(read, b.Path).Length == 0);
+            Check($"exp-on: {Path.GetFileName(b.Path)} blanked",
+                BlankAssert.IsTemplated(b.Path, LiveBytes(read, b.Path)));
         Check("exp-on: .ao stripped", !Encoding.UTF8.GetString(LiveBytes(read, aoPath)).Contains("AddAttached"));
         Check("exp-on: .dds transparent", LiveBytes(read, ddsPath).Length == 136);
     }
 
     var state = StateStore.Load(appPaths)!;
-    var emptySha = HashUtil.Sha256Bytes([]);
     Check("exp-on: state tracks every patched file", state.PatchedFiles.Count == blanking.Length + 2);
     Check("exp-on: blanked files keep the original coordinates they can be redirected to",
-        state.PatchedFiles.Count(f => f.OriginalSize > 0 && f.AppliedSize == 0 &&
-                                     f.AppliedSha256.Equals(emptySha, StringComparison.OrdinalIgnoreCase)) ==
-        blanking.Length);
+        state.PatchedFiles.Count(BlankAssert.MatchesAppliedTemplate) == blanking.Length,
+        "the applied fingerprint must be the template, while the redirect target stays the original");
     var applied = service.GetStatus(game);
     Check("exp-on: status modified", applied.IsModified);
     Check("exp-on: custom bundles present", applied.CustomBundlesExist);
@@ -921,8 +922,8 @@ Check("tier: legacy settings migrate to material",
     const string petPath = "metadata/effects/spells/fire/burn.pet";
     const string matPath = "metadata/effects/spells/fire/shield.mat";
     var originalAo = "version 1\nAddAttached( 'metadata/effects/spells/fire/burn.pet', <root> );\nKeepThis();\n";
-    var petBytes = new byte[] { 10, 20, 30, 40, 50 };
-    var matBytes = new byte[] { 7, 7, 7, 7 };
+    var petBytes = BlankAssert.Fixture(petPath);
+    var matBytes = BlankAssert.Fixture(matPath);
     var indexPath = TestIndexBuilder.Build(bundles, new (string, byte[])[]
     {
         (aoPath, Encoding.UTF8.GetBytes(originalAo)),
@@ -965,7 +966,8 @@ Check("tier: legacy settings migrate to material",
     {
         read.TryGetFile(petPath, out var petRecord);
         read.TryGetFile(matPath, out var matRecord);
-        Check("tier apply: fx blanks the particle file", petRecord!.Read().ToArray().Length == 0);
+        Check("tier apply: fx blanks the particle file",
+            BlankAssert.IsTemplated(petPath, petRecord!.Read().ToArray()));
         Check("tier apply: fx leaves the material bytes alone",
             matRecord!.Read().ToArray().SequenceEqual(matBytes));
     }
@@ -982,7 +984,8 @@ Check("tier: legacy settings migrate to material",
     using (var read = IndexSession.OpenReadOnly(game))
     {
         read.TryGetFile(matPath, out var matRecord);
-        Check("tier apply: material blanks the material", matRecord!.Read().ToArray().Length == 0);
+        Check("tier apply: material blanks the material",
+            BlankAssert.IsTemplated(matPath, matRecord!.Read().ToArray()));
     }
 }
 
@@ -996,8 +999,8 @@ Check("tier: legacy settings migrate to material",
     const string petPath = "metadata/effects/spells/fire/burn.pet";
     const string matPath = "metadata/effects/spells/fire/shield.mat";
     var originalAo = "version 1\nAddAttached( 'metadata/effects/spells/fire/burn.pet', <root> );\nKeepThis();\n";
-    var petBytes = new byte[] { 10, 20, 30, 40, 50 };
-    var matBytes = new byte[] { 7, 7, 7, 7 };
+    var petBytes = BlankAssert.Fixture(petPath);
+    var matBytes = BlankAssert.Fixture(matPath);
     var indexPath = TestIndexBuilder.Build(bundles, new (string, byte[])[]
     {
         (aoPath, Encoding.UTF8.GetBytes(originalAo)),
@@ -1056,7 +1059,7 @@ Check("tier: legacy settings migrate to material",
     using (var read = IndexSession.OpenReadOnly(game))
     {
         Check("undo scope: material bytes back", Bytes(read, matPath).SequenceEqual(matBytes));
-        Check("undo scope: particle still blanked", Bytes(read, petPath).Length == 0);
+        Check("undo scope: particle still blanked", BlankAssert.IsTemplated(petPath, Bytes(read, petPath)));
         Check("undo scope: script still stripped",
             !Encoding.UTF8.GetString(Bytes(read, aoPath)).Contains("AddAttached"));
     }
@@ -1198,6 +1201,116 @@ Check("tier: legacy settings migrate to material",
 }
 
 // ---------------------------------------------------------------------------
+// Blanking templates: the false-skip guard, the empty-bytes fallback, the migration
+// ---------------------------------------------------------------------------
+{
+    var root = TestIndexBuilder.NewRoot("blank-templates");
+    var bundles = Path.Combine(root, "Bundles2");
+    const string matPath = "metadata/effects/spells/fire/shield.mat";
+    const string petPath = "metadata/effects/spells/fire/burn.pet";
+    var templateMat = BlankAssert.TemplateFor(matPath);
+    var templatePet = BlankAssert.TemplateFor(petPath);
+
+    // One .mat is an untouched official file that happens to be exactly as long as the material
+    // template; the other is already blanked by us (so its content lands in a custom bundle).
+    var indexPath = TestIndexBuilder.Build(bundles, new (string, byte[])[]
+    {
+        (matPath, BlankAssert.Fixture(matPath)),
+        (petPath, BlankAssert.Fixture(petPath))
+    });
+    var game = SteamLibraryLocator.FromIndex(indexPath);
+    var appPaths = new AppPaths(Path.Combine(root, "home"));
+    appPaths.Ensure();
+    var service = new AppService(appPaths);
+    var (packB, _) = service.BuildRules(game, "Blank Templates", "test");
+
+    ApplyRequest At(WriteStrategy strategy) => new()
+    {
+        Game = game, Pack = packB, Preset = "safe", Ignore = IgnoreList.Default(),
+        MaxTier = RiskTier.Material, WriteStrategy = strategy, Force = true
+    };
+
+    // The templates are the production shapes: a BOM-only effect pack, a bare `0` particle file,
+    // and a JSON document declaring just the format's version.
+    Check("template: .epk is a BOM and nothing else",
+        ReplacementFactory.BlankReplacement(StrategyKind.NullEffectPack, BlankStyle.Template)!
+            .SequenceEqual(new byte[] { 0xFF, 0xFE }));
+    Check("template: .pet is BOM + \"0\"",
+        templatePet.SequenceEqual(new byte[] { 0xFF, 0xFE, 0x30, 0x00 }),
+        $"len={templatePet.Length}");
+    Check("template: .mat is BOM + valid JSON with its version",
+        templateMat.Length == 42 &&
+        System.Text.Encoding.Unicode.GetString(templateMat, 2, templateMat.Length - 2)
+            .Replace("\r\n", "\n") == "{\n    \"version\": 4\n}",
+        $"len={templateMat.Length}");
+    Check("template: .fxgraph declares version 3",
+        System.Text.Encoding.Unicode.GetString(
+            ReplacementFactory.BlankReplacement(StrategyKind.NullGraph, BlankStyle.Template)!,
+            2, ReplacementFactory.BlankReplacement(StrategyKind.NullGraph, BlankStyle.Template)!.Length - 2)
+            .Replace("\r\n", "\n") == "{\n    \"version\": 3\n}");
+
+    // `--blank-style empty` must still reproduce the pre-v1.3 behaviour exactly.
+    Check("template: the empty-bytes fallback still writes zero-length content",
+        ReplacementFactory.BlankReplacement(StrategyKind.NullMaterial, BlankStyle.EmptyBytes)!
+            .Length == 0);
+    service.Apply(At(WriteStrategy.Empty));
+    using (var read = IndexSession.OpenReadOnly(game))
+    {
+        Check("template: empty style blanks to 0 bytes",
+            BlankAssert.IsEmptyBytes(read.TryGetFile(matPath, out var m) ? m!.Read().ToArray() : []));
+    }
+
+    // Migration: the same patched client, now planned with templates, must see work to do — if the
+    // "already blank" check keyed on bytes alone it would call these done and `plan` would lie.
+    var migrate = service.BuildPlan(At(WriteStrategy.Template));
+    Check("template: a 0-byte patch is not mistaken for a templated one",
+        migrate.Changes.Count == 2 && migrate.Unchanged.Count == 0,
+        $"changes={migrate.Changes.Count} unchanged={migrate.Unchanged.Count}");
+
+    service.Apply(At(WriteStrategy.Template));
+    using (var read = IndexSession.OpenReadOnly(game))
+    {
+        read.TryGetFile(matPath, out var rec);
+        Check("template: upgrading re-blanks with the template",
+            BlankAssert.IsTemplated(matPath, rec!.Read().ToArray()));
+    }
+
+    // Restore still hands back the original bytes, template or not.
+    service.Restore(new RestoreRequest { Game = game });
+    using (var read = IndexSession.OpenReadOnly(game))
+    {
+        read.TryGetFile(matPath, out var rec);
+        Check("template: restore returns the original after a templated blank",
+            rec!.Read().ToArray().AsSpan().Slice(0, 8)
+                .SequenceEqual(BlankAssert.Fixture(matPath).AsSpan(0, 8)));
+    }
+
+    // The false-skip guard: an *official* file whose length equals the template must still be
+    // treated as work, because size alone cannot say "we already wrote this".
+    var trickRoot = TestIndexBuilder.NewRoot("blank-template-tripwire");
+    var trickBundles = Path.Combine(trickRoot, "Bundles2");
+    var trickIndex = TestIndexBuilder.Build(trickBundles, new (string, byte[])[]
+    {
+        (matPath, templateMat),
+        (petPath, BlankAssert.Fixture(petPath))
+    });
+    var trickGame = SteamLibraryLocator.FromIndex(trickIndex);
+    var trickPaths = new AppPaths(Path.Combine(trickRoot, "home"));
+    trickPaths.Ensure();
+    var trickService = new AppService(trickPaths);
+    var (packT, _) = trickService.BuildRules(trickGame, "Tripwire", "test");
+    var trickPlan = trickService.BuildPlan(new ApplyRequest
+    {
+        Game = trickGame, Pack = packT, Preset = "safe", Ignore = IgnoreList.Default(),
+        MaxTier = RiskTier.Material
+    });
+    Check("template: an official file the same length as the template is not skipped",
+        trickPlan.Changes.Any(c => c.Path == matPath) &&
+        trickPlan.Unchanged.Count == 0,
+        $"changes={trickPlan.Changes.Count} unchanged={trickPlan.Unchanged.Count}");
+}
+
+// ---------------------------------------------------------------------------
 // AppService: per-file restore of an experimental apply (0-byte records redirect back)
 // ---------------------------------------------------------------------------
 {
@@ -1207,8 +1320,8 @@ Check("tier: legacy settings migrate to material",
     const string petPath = "metadata/effects/spells/alpha/burn.pet";
     const string matPath = "metadata/effects/spells/alpha/shield.mat";
     var originalAo = "version 1\nAddAttached( 'metadata/effects/spells/alpha/burn.pet', <root> );\nKeepThis();\n";
-    var pet = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
-    var mat = new byte[] { 9, 8, 7 };
+    var pet = BlankAssert.Fixture(petPath);
+    var mat = BlankAssert.Fixture(matPath);
     var indexPath = TestIndexBuilder.Build(bundles, new[]
     {
         (aoPath, Encoding.UTF8.GetBytes(originalAo)),
@@ -1228,10 +1341,11 @@ Check("tier: legacy settings migrate to material",
     Check("exp-perfile: three files suppressed", StateStore.Load(appPaths) is { PatchedFiles.Count: 3 });
 
     // A game update rewrites the blanked .pet; the .ao and the blanked .mat stay as we wrote them.
+    var updatedPet = BlankAssert.Updated(2);
     using (var work = IndexSession.OpenWorkCopy(indexPath, bundles))
     {
         work.TryGetFile(petPath, out var rec);
-        rec!.Write(new byte[] { 42, 42 });
+        rec!.Write(updatedPet);
         work.Save();
         work.Commit();
     }
@@ -1249,10 +1363,10 @@ Check("tier: legacy settings migrate to material",
         Check("exp-perfile: .ao original bytes back",
             Encoding.UTF8.GetString(ao!.Read().ToArray()) == originalAo);
         read.TryGetFile(matPath, out var m);
-        Check("exp-perfile: zero-byte blanking redirects to original bytes",
+        Check("exp-perfile: blanking redirects to original bytes",
             m!.Read().ToArray().SequenceEqual(mat));
         read.TryGetFile(petPath, out var p);
-        Check("exp-perfile: updated .pet keeps the new content", p!.Read().ToArray().SequenceEqual(new byte[] { 42, 42 }));
+        Check("exp-perfile: updated .pet keeps the new content", p!.Read().ToArray().SequenceEqual(updatedPet));
     }
     Check("exp-perfile: state cleared", StateStore.Load(appPaths) == null);
 }
@@ -1267,8 +1381,8 @@ Check("tier: legacy settings migrate to material",
     const string petPath = "metadata/effects/spells/alpha/burn.pet";
     const string matPath = "metadata/effects/spells/alpha/shield.mat";
     var originalAo = "version 1\nAddAttached( 'metadata/effects/spells/alpha/burn.pet', <root> );\nKeepThis();\n";
-    var pet = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
-    var mat = new byte[] { 9, 8, 7 };
+    var pet = BlankAssert.Fixture(petPath);
+    var mat = BlankAssert.Fixture(matPath);
     var indexPath = TestIndexBuilder.Build(bundles, new[]
     {
         (aoPath, Encoding.UTF8.GetBytes(originalAo)), (petPath, pet), (matPath, mat)
@@ -1287,10 +1401,11 @@ Check("tier: legacy settings migrate to material",
     // The update rewrites the blanked .mat with new content; the .ao and .pet stay exactly as we
     // left them. Undoing the material tier must take back what it still owns and forget the file
     // the game replaced — never write the old bytes over it.
+    var updatedMat = BlankAssert.Updated(3);
     using (var work = IndexSession.OpenWorkCopy(indexPath, bundles))
     {
         work.TryGetFile(matPath, out var rec);
-        rec!.Write(new byte[] { 42, 42, 42 });
+        rec!.Write(updatedMat);
         work.Save();
         work.Commit();
     }
@@ -1307,9 +1422,10 @@ Check("tier: legacy settings migrate to material",
     {
         read.TryGetFile(matPath, out var m);
         Check("undo drift: the updated material keeps the new bytes",
-            m!.Read().ToArray().SequenceEqual(new byte[] { 42, 42, 42 }));
+            m!.Read().ToArray().SequenceEqual(updatedMat));
         read.TryGetFile(petPath, out var p);
-        Check("undo drift: the particle is still blanked", p!.Read().ToArray().Length == 0);
+        Check("undo drift: the particle is still blanked",
+            BlankAssert.IsTemplated(petPath, p!.Read().ToArray()));
     }
     var driftedState = StateStore.Load(appPaths)!;
     Check("undo drift: the forgotten file is out of the state, the kept ones are not",
@@ -1353,7 +1469,7 @@ Check("tier: legacy settings migrate to material",
             m!.Read().ToArray().SequenceEqual(mat));
         read.TryGetFile(petPath, out var p);
         Check("undo ggpk: the particle is still blanked inside the container",
-            p!.Read().ToArray().Length == 0);
+            BlankAssert.IsTemplated(petPath, p!.Read().ToArray()));
     }
     Check("undo ggpk: the container still carries the kept suppression",
         ggStore.HasCustomBundles() && ggService.GetStatus(ggGame).IsModified);
@@ -1375,8 +1491,8 @@ Check("tier: legacy settings migrate to material",
     const string petPath = "metadata/effects/spells/fire/burn.pet";
     const string matPath = "metadata/effects/spells/fire/shield.mat";
     var originalAo = "version 1\nAddAttached( 'metadata/effects/spells/fire/burn.pet', <root> );\nKeepThis();\n";
-    var pet = new byte[] { 5, 5, 5, 5, 5 };
-    var mat = new byte[] { 6, 6, 6 };
+    var pet = BlankAssert.Fixture(petPath);
+    var mat = BlankAssert.Fixture(matPath);
     TestIndexBuilder.Build(bundles, new[]
     {
         (aoPath, Encoding.UTF8.GetBytes(originalAo)),
@@ -1425,8 +1541,10 @@ Check("tier: legacy settings migrate to material",
     Check("ggpk-exp: write journal cleared", !File.Exists(ggpkPath + ".psjournal"));
     using (var read = IndexSession.OpenReadOnly(game))
     {
-        Check("ggpk-exp: .pet blanked inside the container", LiveBytes(read, petPath).Length == 0);
-        Check("ggpk-exp: .mat blanked inside the container", LiveBytes(read, matPath).Length == 0);
+        Check("ggpk-exp: .pet blanked inside the container",
+            BlankAssert.IsTemplated(petPath, LiveBytes(read, petPath)));
+        Check("ggpk-exp: .mat blanked inside the container",
+            BlankAssert.IsTemplated(matPath, LiveBytes(read, matPath)));
         Check("ggpk-exp: .ao stripped inside the container",
             !Encoding.UTF8.GetString(LiveBytes(read, aoPath)).Contains("AddAttached"));
     }
@@ -1449,6 +1567,1033 @@ Check("tier: legacy settings migrate to material",
     }
     Check("ggpk-exp: status original", !service.GetStatus(game).IsModified);
 }
+
+// ---------------------------------------------------------------------------
+// Rendering compression: options, gating, planner scaffolding (M0)
+// ---------------------------------------------------------------------------
+{
+    var off = new CompressionOptions();
+    Check("compression: defaults all off", !off.AnyEnabled && !off.TextureEnabled);
+    Check("compression: strength clamped",
+        new CompressionOptions { DecimateStrength = 250 }.ClampedStrength == 100 &&
+        new CompressionOptions { DecimateStrength = -5 }.ClampedStrength == 0);
+    var cloneSrc = new CompressionOptions { Texture = true, DecimateStrength = 70 };
+    var clone = cloneSrc.Clone();
+    clone.Texture = false;
+    Check("compression: clone is independent", cloneSrc.Texture && !clone.Texture && clone.DecimateStrength == 70);
+
+    var texOnly = new CompressionOptions { Texture = true };
+    var downOnly = new CompressionOptions { TextureDownscale = true };
+    var shaderOnly = new CompressionOptions { Shader = true };
+    Check("compression: art particle dds is a texture candidate",
+        CompressionPlanner.IsCandidate("art/particles/fire/b.dds", texOnly) &&
+        CompressionPlanner.IsCandidate("art/particles/fire/b.dds", downOnly));
+    Check("compression: metadata dds is NOT a texture candidate (root-aware; blanking keeps it)",
+        !CompressionPlanner.IsCandidate("metadata/effects/spells/fire/b.dds", texOnly));
+    Check("compression: fxgraph candidate only under shader roots + shader switch",
+        CompressionPlanner.IsCandidate("metadata/effects/spells/fire/b.fxgraph", shaderOnly) &&
+        !CompressionPlanner.IsCandidate("metadata/effects/spells/fire/b.fxgraph", texOnly) &&
+        !CompressionPlanner.IsCandidate("art/particles/fire/b.fxgraph", shaderOnly));
+    Check("compression: fmt candidate only under mesh roots + a mesh switch",
+        CompressionPlanner.IsCandidate("art/particles/fire/b.fmt", new CompressionOptions { MeshLod = true }) &&
+        !CompressionPlanner.IsCandidate("art/particles/fire/b.fmt", texOnly) &&
+        !CompressionPlanner.IsCandidate("metadata/effects/spells/fire/b.fmt", new CompressionOptions { MeshDecimate = true }));
+    Check("compression: normal map and mat/pet are never candidates",
+        !CompressionPlanner.IsCandidate("art/particles/fire/b_n.dds", texOnly) &&
+        !CompressionPlanner.IsCandidate("a/b.mat", shaderOnly) &&
+        !CompressionPlanner.IsCandidate("a/b.pet", shaderOnly));
+    Check("compression: strategy kinds recognised",
+        CompressionOptions.IsCompressionStrategy(StrategyKind.CompressDds) &&
+        CompressionOptions.IsCompressionStrategy(StrategyKind.SimplifyGraph) &&
+        CompressionOptions.IsCompressionStrategy(StrategyKind.SwapMeshLod) &&
+        CompressionOptions.IsCompressionStrategy(StrategyKind.DecimateMesh) &&
+        !CompressionOptions.IsCompressionStrategy(StrategyKind.NullGraph) &&
+        !CompressionOptions.IsCompressionStrategy(StrategyKind.Auto));
+    Check("compression: texture tier is material, mesh/shader tier is fx",
+        RiskTiers.Of(StrategyKind.CompressDds, "a.dds") == RiskTier.Material &&
+        RiskTiers.Of(StrategyKind.SimplifyGraph, "a.fxgraph") == RiskTier.Fx &&
+        RiskTiers.Of(StrategyKind.SwapMeshLod, "a.fmt") == RiskTier.Fx &&
+        RiskTiers.Of(StrategyKind.DecimateMesh, "a.fmt") == RiskTier.Fx);
+    Check("compression: monster paths guarded case-insensitively",
+        CompressionOptions.IsGameplayProtected("art/models/effects/monster_particles/x.fmt") &&
+        CompressionOptions.IsGameplayProtected("art/particles/MONSTERS_effects/x.fmt") &&
+        !CompressionOptions.IsGameplayProtected("art/particles/fire/x.fmt"));
+    Check("compression: normal maps recognised",
+        CompressionOptions.IsNormalMap("art/particles/fire/spark_n.dds") &&
+        CompressionOptions.IsNormalMap("art/particles/fire/spark_normal.dds") &&
+        CompressionOptions.IsNormalMap("art/particles/fire/spark_norm.dds") &&
+        !CompressionOptions.IsNormalMap("art/particles/fire/spark.dds"));
+
+    var settings = new AppSettings
+    {
+        Compression = new CompressionOptions { Texture = true, MeshLod = true, DecimateStrength = 70 }
+    };
+    var settingsBack = System.Text.Json.JsonSerializer.Deserialize<AppSettings>(
+        System.Text.Json.JsonSerializer.Serialize(settings))!;
+    Check("compression: settings roundtrip",
+        settingsBack.EffectiveCompression().Texture && settingsBack.EffectiveCompression().MeshLod &&
+        settingsBack.EffectiveCompression().DecimateStrength == 70 &&
+        !settingsBack.EffectiveCompression().Shader);
+    Check("compression: null settings section means off", !new AppSettings().EffectiveCompression().AnyEnabled);
+    var profile = new Profile
+    {
+        Name = "comp",
+        Compression = new CompressionOptions { Shader = true, MeshDecimate = true, DecimateStrength = 30 }
+    };
+    var profileBack = System.Text.Json.JsonSerializer.Deserialize<Profile>(
+        System.Text.Json.JsonSerializer.Serialize(profile))!;
+    Check("compression: profile roundtrip",
+        profileBack.EffectiveCompression().Shader && profileBack.EffectiveCompression().MeshDecimate &&
+        profileBack.EffectiveCompression().DecimateStrength == 30);
+    Check("compression: null profile section means off", !new Profile().EffectiveCompression().AnyEnabled);
+
+    // Fixture: blanking-root files plus art/ compression candidates. Codecs are still M0 stubs,
+    // so every candidate must land in Unsupported — never silently written, never blanked instead.
+    var root = TestIndexBuilder.NewRoot("compression");
+    var bundles = Path.Combine(root, "Bundles2");
+    var notMesh = new byte[] { 7, 7, 7 };
+    var petBytes = new byte[] { 0x10, 0x20, 0x30 };
+    var indexPath = TestIndexBuilder.Build(bundles, new[]
+    {
+        ("metadata/effects/spells/fire/fireball.ao", Encoding.UTF8.GetBytes("AddAttached( 'x.pet', <root> );")),
+        ("metadata/effects/spells/fire/burn.pet", petBytes),
+        ("metadata/effects/spells/fire/glow.fxgraph", Encoding.Unicode.GetBytes("{\"nodes\":[]}")),
+        ("metadata/effects/spells/fire/tex.dds", new byte[] { 1, 2, 3, 4 }),
+        ("art/particles/fire/spark.fmt", notMesh),
+        ("art/particles/fire/spark.dds", new byte[] { 5, 6, 7, 8 }),
+        ("art/particles/fire/spark_n.dds", new byte[] { 9, 9 }),
+        ("art/models/effects/monster_particles/m.fmt", notMesh),
+        ("metadata/monsters/foo/foo.ot", new byte[] { 9, 9, 9 })
+    });
+    var game = SteamLibraryLocator.FromIndex(indexPath);
+    var appPaths = new AppPaths(Path.Combine(root, "home"));
+    appPaths.Ensure();
+    var service = new AppService(appPaths);
+    var (packC, _) = service.BuildRules(game, "Compression Test", "test");
+    RulePackStore.Save(packC, Path.Combine(root, "pack.json"));
+
+    PatchPlan Plan(CompressionOptions c, RiskTier tier, WriteStrategy ws) => service.BuildPlan(new ApplyRequest
+    {
+        Game = game,
+        Pack = packC,
+        RulePackPath = Path.Combine(root, "pack.json"),
+        Preset = "safe",
+        Ignore = IgnoreList.Default(),
+        MaxTier = tier,
+        WriteStrategy = ws,
+        Compression = c,
+        Force = true
+    });
+
+    static byte[] LiveBytes(IndexSession session, string path)
+    {
+        session.TryGetFile(path, out var record);
+        return record!.Read().ToArray();
+    }
+
+    const string aoPath = "metadata/effects/spells/fire/fireball.ao";
+    const string petPath = "metadata/effects/spells/fire/burn.pet";
+    const string graphPath = "metadata/effects/spells/fire/glow.fxgraph";
+    const string metaTex = "metadata/effects/spells/fire/tex.dds";
+    const string artTex = "art/particles/fire/spark.dds";
+    const string artNorm = "art/particles/fire/spark_n.dds";
+    const string artMesh = "art/particles/fire/spark.fmt";
+    const string monMesh = "art/models/effects/monster_particles/m.fmt";
+
+    // Template (no compression): blanking is unchanged, art/ is never touched.
+    var pOff = Plan(new CompressionOptions(), RiskTier.Material, WriteStrategy.Template);
+    Check("write-strategy: template keeps blanking behaviour",
+        pOff.CompressionFiles == 0 &&
+        pOff.Changes.Any(ch => ch.Path == graphPath) &&
+        pOff.Changes.Any(ch => ch.Path == metaTex) &&
+        !pOff.Changes.Any(ch => ch.Path.StartsWith("art/")));
+
+    // CompressionOnly: candidates the (real) codecs cannot compress stay Unsupported, and nothing
+    // is blanked — not even the safe-tier .ao/.dds baseline.
+    var pShaderOnly = Plan(new CompressionOptions { Shader = true }, RiskTier.Fx, WriteStrategy.CompressionOnly);
+    Check("compress-only: uncompressible shader candidate is unsupported, never blanked",
+        !pShaderOnly.Changes.Any(ch => ch.Path == graphPath) &&
+        pShaderOnly.Unsupported.Contains(graphPath));
+    Check("compress-only: blanking is fully off (ao/dds/pet untouched)",
+        !pShaderOnly.Changes.Any(ch => ch.Path == aoPath) &&
+        !pShaderOnly.Changes.Any(ch => ch.Path == metaTex) &&
+        !pShaderOnly.Changes.Any(ch => ch.Path == petPath));
+
+    // CompressThenTemplate: the same uncompressible shader falls back to a valid empty graph, while
+    // non-candidate files (metadata .dds, .ao) still blank normally.
+    var pShaderThen = Plan(new CompressionOptions { Shader = true }, RiskTier.Fx, WriteStrategy.CompressThenTemplate);
+    Check("compress-then-template: uncompressible shader falls back to NullGraph blanking",
+        pShaderThen.Changes.Any(ch => ch.Path == graphPath && ch.Strategy == StrategyKind.NullGraph) &&
+        pShaderThen.CompressionFallbackFiles >= 1 &&
+        !pShaderThen.Unsupported.Contains(graphPath));
+    Check("compress-then-template: non-candidate dds/ao still blank",
+        pShaderThen.Changes.Any(ch => ch.Path == metaTex) &&
+        pShaderThen.Changes.Any(ch => ch.Path == aoPath));
+
+    // The root-blind bug fix: a metadata .dds is a blanking root but NOT a texture-compression root,
+    // so texture compression must not drop it — it still blanks.
+    var pTexThen = Plan(new CompressionOptions { Texture = true }, RiskTier.Material, WriteStrategy.CompressThenTemplate);
+    Check("compress-then-template: metadata dds is blanked, not silently dropped (root-aware)",
+        pTexThen.Changes.Any(ch => ch.Path == metaTex && ch.Strategy == StrategyKind.TransparentDds));
+    Check("compress-then-template: uncompressible art texture falls back to a transparent stub",
+        pTexThen.Changes.Any(ch => ch.Path == artTex && ch.Strategy == StrategyKind.TransparentDds));
+    Check("compress-then-template: normal map is not a candidate and art root has no blanking rule",
+        !pTexThen.Changes.Any(ch => ch.Path == artNorm) &&
+        !pTexThen.Unsupported.Contains(artNorm) &&
+        !pTexThen.Ignored.Contains(artNorm));
+
+    var pTexOnly = Plan(new CompressionOptions { Texture = true }, RiskTier.Material, WriteStrategy.CompressionOnly);
+    Check("compress-only: metadata dds neither blanked nor compressed (in no bucket)",
+        !pTexOnly.Changes.Any(ch => ch.Path == metaTex) &&
+        !pTexOnly.Unsupported.Contains(metaTex));
+    Check("compress-only: art texture candidate is unsupported, normal map is not a candidate",
+        pTexOnly.Unsupported.Contains(artTex) &&
+        !pTexOnly.Unsupported.Contains(artNorm) &&
+        !pTexOnly.Ignored.Contains(artNorm));
+
+    var pMesh = Plan(new CompressionOptions { MeshLod = true, MeshDecimate = true }, RiskTier.Fx, WriteStrategy.CompressionOnly);
+    Check("compression: effect mesh is a candidate", pMesh.Unsupported.Contains(artMesh));
+    Check("compression: monster mesh is gameplay-ignored", pMesh.Ignored.Contains(monMesh));
+
+    var pSafe = Plan(new CompressionOptions { MeshLod = true, Texture = true }, RiskTier.Safe, WriteStrategy.CompressionOnly);
+    Check("compression: safe tier skips mesh and texture candidates",
+        pSafe.SkippedExperimental.Contains(artMesh) &&
+        pSafe.SkippedExperimental.Contains(artTex) &&
+        pSafe.SkippedFxCount >= 1 && pSafe.SkippedMaterialCount >= 1 &&
+        pSafe.CompressionFiles == 0);
+
+    // A tier-skipped candidate must NOT fall back to blanking: the tier is a true shared ceiling.
+    var pSafeThen = Plan(new CompressionOptions { Texture = true }, RiskTier.Safe, WriteStrategy.CompressThenTemplate);
+    Check("compress-then-template: tier-skipped art texture is not fallback-blanked",
+        pSafeThen.SkippedExperimental.Contains(artTex) &&
+        !pSafeThen.Changes.Any(ch => ch.Path == artTex));
+    Check("compress-then-template: safe-tier metadata dds still blanks at safe tier",
+        pSafeThen.Changes.Any(ch => ch.Path == metaTex));
+
+    // CompressThenEmpty: the fallback still blanks an uncompressible shader (0 bytes for .fxgraph).
+    var pShaderEmpty = Plan(new CompressionOptions { Shader = true }, RiskTier.Fx, WriteStrategy.CompressThenEmpty);
+    Check("compress-then-empty: uncompressible shader falls back to blanking",
+        pShaderEmpty.Changes.Any(ch => ch.Path == graphPath && ch.Strategy == StrategyKind.NullGraph));
+
+    // Full apply, compress-then-template: real codecs refuse the garbage fixture candidates, .fmt
+    // has no template (Unsupported), .dds/.fxgraph fall back to blanking, non-candidates blank, and
+    // restore must bring every byte back.
+    var originalHash = HashUtil.Sha256File(indexPath);
+    var applied = service.Apply(new ApplyRequest
+    {
+        Game = game,
+        Pack = packC,
+        RulePackPath = Path.Combine(root, "pack.json"),
+        Preset = "safe",
+        Ignore = IgnoreList.Default(),
+        MaxTier = RiskTier.Material,
+        WriteStrategy = WriteStrategy.CompressThenTemplate,
+        Compression = new CompressionOptions
+        {
+            Texture = true, Shader = true, MeshLod = true, MeshDecimate = true, DecimateStrength = 80
+        },
+        Force = true
+    });
+    Check("compression: apply with uncompressible candidates never compresses them",
+        applied.Plan.CompressionFiles == 0 &&
+        applied.Plan.Unsupported.Contains(artMesh));
+    Check("compression: no compression strategy ever targets .pet",
+        !applied.Plan.Changes.Any(ch => ch.Path.EndsWith(".pet") &&
+            CompressionOptions.IsCompressionStrategy(ch.Strategy)));
+    using (var read = IndexSession.OpenReadOnly(indexPath, bundles))
+    {
+        Check("compression: mesh without a template stays untouched on disk",
+            LiveBytes(read, artMesh).SequenceEqual(notMesh));
+        Check("compress-then-template: art texture fallback wrote a transparent stub",
+            LiveBytes(read, artTex).SequenceEqual(ReplacementFactory.TransparentDds));
+    }
+    var restore = service.Restore(new RestoreRequest { Game = game });
+    Check("compression: restore returns index to original hash",
+        restore.RestoredIndex && HashUtil.Sha256File(indexPath).Equals(originalHash, StringComparison.OrdinalIgnoreCase));
+    using (var read = IndexSession.OpenReadOnly(indexPath, bundles))
+    {
+        Check("compression: pet bytes back after restore",
+            LiveBytes(read, petPath).SequenceEqual(petBytes));
+        Check("compression: art texture bytes back after restore",
+            LiveBytes(read, artTex).SequenceEqual(new byte[] { 5, 6, 7, 8 }));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WriteStrategy vocabulary + settings/profile migration
+// ---------------------------------------------------------------------------
+{
+    Check("write-strategy: keys roundtrip",
+        WriteStrategies.ToKey(WriteStrategy.Template) == "template" &&
+        WriteStrategies.ToKey(WriteStrategy.Empty) == "empty" &&
+        WriteStrategies.ToKey(WriteStrategy.CompressionOnly) == "compress-only" &&
+        WriteStrategies.ToKey(WriteStrategy.CompressThenTemplate) == "compress-then-template" &&
+        WriteStrategies.ToKey(WriteStrategy.CompressThenEmpty) == "compress-then-empty");
+    Check("write-strategy: parse accepts keys and legacy aliases",
+        WriteStrategies.TryParse("compress-only", out var co) && co == WriteStrategy.CompressionOnly &&
+        WriteStrategies.TryParse("empty", out var e) && e == WriteStrategy.Empty &&
+        WriteStrategies.TryParse("valid", out var v) && v == WriteStrategy.Template &&
+        !WriteStrategies.TryParse("bogus", out _));
+    Check("write-strategy: unknown/absent means template",
+        WriteStrategies.FromKey(null) == WriteStrategy.Template &&
+        WriteStrategies.FromKey("bogus") == WriteStrategy.Template);
+    Check("write-strategy: derived blank style",
+        WriteStrategies.ToBlankStyle(WriteStrategy.Empty) == BlankStyle.EmptyBytes &&
+        WriteStrategies.ToBlankStyle(WriteStrategy.CompressThenEmpty) == BlankStyle.EmptyBytes &&
+        WriteStrategies.ToBlankStyle(WriteStrategy.Template) == BlankStyle.Template &&
+        WriteStrategies.ToBlankStyle(WriteStrategy.CompressThenTemplate) == BlankStyle.Template &&
+        WriteStrategies.ToBlankStyle(WriteStrategy.CompressionOnly) == BlankStyle.Template);
+    Check("write-strategy: compression-containing and fallback flags",
+        WriteStrategies.IsCompressionContaining(WriteStrategy.CompressionOnly) &&
+        WriteStrategies.IsCompressionContaining(WriteStrategy.CompressThenTemplate) &&
+        WriteStrategies.IsCompressionContaining(WriteStrategy.CompressThenEmpty) &&
+        !WriteStrategies.IsCompressionContaining(WriteStrategy.Template) &&
+        !WriteStrategies.IsCompressionContaining(WriteStrategy.Empty) &&
+        WriteStrategies.FallsBackToBlank(WriteStrategy.CompressThenTemplate) &&
+        WriteStrategies.FallsBackToBlank(WriteStrategy.CompressThenEmpty) &&
+        !WriteStrategies.FallsBackToBlank(WriteStrategy.CompressionOnly));
+
+    // Migration: an old settings file with only BlankStyle keeps its meaning; the new key wins.
+    Check("write-strategy: old blank-style empty migrates to Empty",
+        new AppSettings { BlankStyle = "empty" }.EffectiveWriteStrategy() == WriteStrategy.Empty);
+    Check("write-strategy: old blank-style template migrates to Template",
+        new AppSettings { BlankStyle = "template" }.EffectiveWriteStrategy() == WriteStrategy.Template);
+    Check("write-strategy: new key wins over the legacy mirror",
+        new AppSettings { BlankStyle = "empty", WriteStrategy = "compress-then-template" }
+            .EffectiveWriteStrategy() == WriteStrategy.CompressThenTemplate);
+    var setSettings = new AppSettings();
+    setSettings.SetWriteStrategy(WriteStrategy.CompressThenEmpty);
+    Check("write-strategy: SetWriteStrategy refreshes the legacy mirror",
+        setSettings.WriteStrategy == "compress-then-empty" && setSettings.BlankStyle == "empty" &&
+        setSettings.EffectiveWriteStrategy() == WriteStrategy.CompressThenEmpty);
+    var settingsRt = System.Text.Json.JsonSerializer.Deserialize<AppSettings>(
+        System.Text.Json.JsonSerializer.Serialize(setSettings))!;
+    Check("write-strategy: settings roundtrip preserves strategy",
+        settingsRt.EffectiveWriteStrategy() == WriteStrategy.CompressThenEmpty);
+
+    Check("write-strategy: old profile blank-style migrates",
+        new Profile { Name = "old", BlankStyle = "empty" }.EffectiveWriteStrategy() == WriteStrategy.Empty);
+    var setProfile = new Profile { Name = "p" };
+    setProfile.SetWriteStrategy(WriteStrategy.CompressionOnly);
+    var profileRt = System.Text.Json.JsonSerializer.Deserialize<Profile>(
+        System.Text.Json.JsonSerializer.Serialize(setProfile))!;
+    Check("write-strategy: profile roundtrip preserves strategy and mirror",
+        profileRt.EffectiveWriteStrategy() == WriteStrategy.CompressionOnly &&
+        profileRt.BlankStyle == "template");
+}
+
+// ---------------------------------------------------------------------------
+// Mesh LOD swap: mLOD parser, sibling probing, splice (M1)
+// ---------------------------------------------------------------------------
+{
+    var gridA = TestFmtBuilder.Grid(5);
+    var parsed = FmtMesh.TryParse(gridA);
+    Check("fmt: layout A grid parses",
+        parsed != null && parsed.Tris == 32 && parsed.Verts == 25 && parsed.Stride == 24 &&
+        !parsed.LayoutB && parsed.VertexStart == 252 && parsed.VertexEnd == 852,
+        parsed == null ? "null" : $"tris={parsed.Tris} verts={parsed.Verts} stride={parsed.Stride}");
+    var gridB = TestFmtBuilder.Grid(5, layoutB: true);
+    var parsedB = FmtMesh.TryParse(gridB);
+    Check("fmt: layout B grid parses and is flagged",
+        parsedB != null && parsedB.LayoutB && parsedB.VertexStart == 260 && parsedB.Tris == 32);
+
+    Check("fmt: non-mLOD refused", FmtMesh.TryParse(new byte[200]) == null);
+    Check("fmt: truncated refused", FmtMesh.TryParse(gridA[..40]) == null);
+    var badCount = (byte[])gridA.Clone();
+    BitConverter.GetBytes(99u).CopyTo(badCount, 56);
+    Check("fmt: inconsistent index count refused", FmtMesh.TryParse(badCount) == null);
+    var badIndex = (byte[])gridA.Clone();
+    BitConverter.GetBytes((ushort)999).CopyTo(badIndex, 60);
+    Check("fmt: out-of-range index refused", FmtMesh.TryParse(badIndex) == null);
+    var degenerate = (byte[])gridA.Clone();
+    BitConverter.GetBytes(BitConverter.ToUInt16(gridA, 60)).CopyTo(degenerate, 62);
+    Check("fmt: degenerate triangle refused", FmtMesh.TryParse(degenerate) == null);
+    var nanBox = (byte[])gridA.Clone();
+    BitConverter.GetBytes(float.NaN).CopyTo(nanBox, 7);
+    Check("fmt: NaN bbox refused", FmtMesh.TryParse(nanBox) == null);
+
+    var ringCandidates = FmtMesh.LodSiblingCandidates("art/particles/fx/mp_ring_lod00_ff.fmt").ToList();
+    Check("fmt: lod00 siblings cover padded, unpadded and trimmed suffixes",
+        ringCandidates.Contains("art/particles/fx/mp_ring_lod01_ff.fmt") &&
+        ringCandidates.Contains("art/particles/fx/mp_ring_lod1_ff.fmt") &&
+        ringCandidates.Contains("art/particles/fx/mp_ring_lod01.fmt") &&
+        ringCandidates.Contains("art/particles/fx/mp_ring_lod02_ff.fmt") &&
+        !ringCandidates.Contains("art/particles/fx/mp_ring_lod00_ff.fmt"));
+    var cylCandidates = FmtMesh.LodSiblingCandidates("art/particles/fx/mp_cyl_lod0_ff.fmt").ToList();
+    Check("fmt: lod0 sibling variants",
+        cylCandidates.Contains("art/particles/fx/mp_cyl_lod1.fmt") &&
+        cylCandidates.Contains("art/particles/fx/mp_cyl_lod2_ff.fmt"));
+    Check("fmt: non-lod and higher-lod sources yield nothing",
+        !FmtMesh.LodSiblingCandidates("art/particles/fx/rock.fmt").Any() &&
+        !FmtMesh.LodSiblingCandidates("art/particles/fx/mp_cyl_lod2_ff.fmt").Any());
+
+    var big = TestFmtBuilder.Grid(9, name: "mp_ring_lod00_ff");   // 128 tris, 81 verts
+    var small = TestFmtBuilder.Grid(5, name: "mp_ring_lod01_ff"); // 32 tris, 25 verts
+    var swapped = FmtMesh.TryLodSwap(big, small);
+    Check("fmt: lod swap produces a smaller valid mesh",
+        swapped != null && swapped.Length < big.Length &&
+        FmtMesh.TryParse(swapped) is { Tris: 32, Verts: 25, LayoutB: false });
+    if (swapped != null)
+    {
+        var origGeo = FmtMesh.TryParse(big)!;
+        var sibGeo = FmtMesh.TryParse(small)!;
+        var trailer = big[origGeo.VertexEnd..];
+        Check("fmt: swap keeps sibling geometry and original identity trailer",
+            swapped[..sibGeo.VertexEnd].SequenceEqual(small[..sibGeo.VertexEnd]) &&
+            swapped[sibGeo.VertexEnd..].SequenceEqual(trailer));
+    }
+    Check("fmt: swap refuses a sibling with more triangles", FmtMesh.TryLodSwap(small, big) == null);
+    Check("fmt: swap refuses layout B on either side",
+        FmtMesh.TryLodSwap(TestFmtBuilder.Grid(9, layoutB: true), small) == null &&
+        FmtMesh.TryLodSwap(big, TestFmtBuilder.Grid(5, layoutB: true)) == null);
+    Check("fmt: swap refuses garbage", FmtMesh.TryLodSwap(big, new byte[100]) == null);
+
+    // Integration: plan -> apply -> verify -> restore with a real LOD pair in the fixture.
+    var root = TestIndexBuilder.NewRoot("meshlod");
+    var bundles = Path.Combine(root, "Bundles2");
+    var ringPath = "art/particles/fx/mp_ring_lod00_ff.fmt";
+    var sibPath = "art/particles/fx/mp_ring_lod01_ff.fmt";
+    var lonelyPath = "art/particles/fx/lonely_lod0.fmt";
+    var monsterPath = "art/models/effects/monster_particles/m_lod0.fmt";
+    var monsterSib = "art/models/effects/monster_particles/m_lod1.fmt";
+    var indexPath = TestIndexBuilder.Build(bundles, new[]
+    {
+        (ringPath, big),
+        (sibPath, small),
+        (lonelyPath, TestFmtBuilder.Grid(7)),
+        (monsterPath, TestFmtBuilder.Grid(9)),
+        (monsterSib, TestFmtBuilder.Grid(5))
+    });
+    var game = SteamLibraryLocator.FromIndex(indexPath);
+    var appPaths = new AppPaths(Path.Combine(root, "home"));
+    appPaths.Ensure();
+    var service = new AppService(appPaths);
+    var (fmtPack, _) = service.BuildRules(game, "Mesh LOD Test", "test");
+    RulePackStore.Save(fmtPack, Path.Combine(root, "pack.json"));
+
+    ApplyRequest Req(bool lod, bool decimate, RiskTier tier) => new()
+    {
+        Game = game,
+        Pack = fmtPack,
+        RulePackPath = Path.Combine(root, "pack.json"),
+        Preset = "safe",
+        Ignore = IgnoreList.Default(),
+        MaxTier = tier,
+        WriteStrategy = WriteStrategy.CompressionOnly,
+        Compression = new CompressionOptions { MeshLod = lod, MeshDecimate = decimate, DecimateStrength = 60 },
+        Force = true
+    };
+
+    var plan = service.BuildPlan(Req(true, false, RiskTier.Fx));
+    var ringChange = plan.Changes.FirstOrDefault(c => c.Path == ringPath);
+    Check("meshlod: lod0 mesh planned as SwapMeshLod with precomputed bytes",
+        ringChange != null && ringChange.Strategy == StrategyKind.SwapMeshLod &&
+        ringChange.Tier == RiskTier.Fx && ringChange.Replacement != null &&
+        ringChange.Replacement.Length < big.Length);
+    Check("meshlod: sibling itself is not a candidate",
+        !plan.Changes.Any(c => c.Path == sibPath));
+    Check("meshlod: mesh without sibling is unsupported, not guessed",
+        plan.Unsupported.Contains(lonelyPath));
+    Check("meshlod: monster meshes stay gameplay-ignored",
+        plan.Ignored.Contains(monsterPath) && !plan.Changes.Any(c => c.Path == monsterPath));
+    Check("meshlod: safe tier skips the swap",
+        service.BuildPlan(Req(true, false, RiskTier.Safe)).SkippedExperimental.Contains(ringPath));
+
+    var originalHash = HashUtil.Sha256File(indexPath);
+    var applied = service.Apply(Req(true, false, RiskTier.Fx));
+    Check("meshlod: apply writes exactly the planned replacement",
+        applied.Plan.Changes.Count(c => c.Strategy == StrategyKind.SwapMeshLod) == 1);
+    using (var read = IndexSession.OpenReadOnly(indexPath, bundles))
+    {
+        read.TryGetFile(ringPath, out var ringRecord);
+        var live = ringRecord!.Read().ToArray();
+        Check("meshlod: live bytes equal the plan replacement",
+            ringChange!.Replacement != null && live.SequenceEqual(ringChange.Replacement));
+        Check("meshlod: live mesh parses with reduced triangles",
+            FmtMesh.TryParse(live) is { Tris: 32, Verts: 25 });
+        read.TryGetFile(sibPath, out var sibRecord);
+        Check("meshlod: sibling file untouched", sibRecord!.Read().ToArray().SequenceEqual(small));
+        read.TryGetFile(monsterPath, out var monRecord);
+        Check("meshlod: monster mesh untouched", monRecord!.Read().ToArray().SequenceEqual(TestFmtBuilder.Grid(9)));
+    }
+    var status = service.GetStatus(game);
+    Check("meshlod: status modified with custom bundles", status.IsModified && status.CustomBundlesExist);
+
+    var again = service.Apply(Req(true, false, RiskTier.Fx));
+    Check("meshlod: re-apply rolls back to baseline and reproduces the swap",
+        again.Plan.Changes.Count(c => c.Strategy == StrategyKind.SwapMeshLod) == 1);
+
+    var restore = service.Restore(new RestoreRequest { Game = game });
+    Check("meshlod: restore returns the original index hash",
+        restore.RestoredIndex &&
+        HashUtil.Sha256File(indexPath).Equals(originalHash, StringComparison.OrdinalIgnoreCase));
+    using (var read = IndexSession.OpenReadOnly(indexPath, bundles))
+    {
+        read.TryGetFile(ringPath, out var ringRecord);
+        Check("meshlod: original mesh bytes back", ringRecord!.Read().ToArray().SequenceEqual(big));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Mesh decimation: clustering, strength curve, floors, full loop (M2)
+// ---------------------------------------------------------------------------
+{
+    // Structural validation at the known stride: sparse output can be stride-ambiguous to the
+    // heuristic re-parser, but the counts, indices, attributes and trailer must be exact.
+    static bool ValidDecimation(byte[] orig, byte[] result, int stride)
+    {
+        var og = FmtMesh.TryParse(orig);
+        if (og == null || result.Length < 60)
+            return false;
+        if (!result[..44].SequenceEqual(orig[..44]) || !result[52..56].SequenceEqual(orig[52..56]))
+            return false;
+        int nt = BitConverter.ToInt32(result, 44), nv = BitConverter.ToInt32(result, 48);
+        int ni = BitConverter.ToInt32(result, 56);
+        if (nt < 2 || nv < 4 || ni != 3 * nt || nt * 20 > og.Tris * 19)
+            return false;
+        for (var i = 0; i < ni; i++)
+            if (BitConverter.ToUInt16(result, 60 + 2 * i) >= nv)
+                return false;
+        for (var i = 0; i < ni; i += 3)
+        {
+            var a = BitConverter.ToUInt16(result, 60 + 2 * i);
+            var b = BitConverter.ToUInt16(result, 62 + 2 * i);
+            var c = BitConverter.ToUInt16(result, 64 + 2 * i);
+            if (a == b || b == c || a == c)
+                return false;
+        }
+        var vs = 60 + 2 * ni;
+        var trailerLen = orig.Length - og.VertexEnd;
+        if (result.Length != vs + nv * stride + trailerLen)
+            return false;
+        if (!result[(vs + nv * stride)..].SequenceEqual(orig[og.VertexEnd..]))
+            return false;
+        for (var v = 0; v < nv; v++)
+            for (var k = 12; k < stride; k++)
+                if (result[vs + v * stride + k] != 0x80)
+                    return false; // packed attributes carried verbatim
+        return true;
+    }
+
+    var grid = TestFmtBuilder.Grid(9); // 128 tris, 81 verts, unique positions
+    var d50 = FmtMesh.TryDecimate(grid, 50);
+    Check("decimate: strength 50 shrinks a valid mesh",
+        d50 != null && d50.Length < grid.Length && ValidDecimation(grid, d50, 24));
+    Check("decimate: result re-parses at stride 24",
+        d50 != null && FmtMesh.TryParse(d50) is { LayoutB: false, Stride: 24 });
+    var d25 = FmtMesh.TryDecimate(grid, 25);
+    var d100 = FmtMesh.TryDecimate(grid, 100);
+    Check("decimate: stronger settings keep fewer triangles",
+        d25 != null && d100 != null &&
+        BitConverter.ToInt32(d100, 44) < BitConverter.ToInt32(d25, 44) &&
+        ValidDecimation(grid, d25, 24) && ValidDecimation(grid, d100, 24));
+    Check("decimate: zero/negative strength is a no-op",
+        FmtMesh.TryDecimate(grid, 0) == null && FmtMesh.TryDecimate(grid, -10) == null);
+    Check("decimate: billboard quad refused",
+        FmtMesh.TryDecimate(TestFmtBuilder.Grid(2), 100) == null);
+    Check("decimate: layout B refused",
+        FmtMesh.TryDecimate(TestFmtBuilder.Grid(9, layoutB: true), 80) == null);
+    Check("decimate: garbage refused", FmtMesh.TryDecimate(new byte[300], 80) == null);
+
+    var grid28 = TestFmtBuilder.Grid(9, stride: 28);
+    var d28 = FmtMesh.TryDecimate(grid28, 60);
+    Check("decimate: stride-28 vertices carried at their own stride",
+        d28 != null && ValidDecimation(grid28, d28, 28));
+
+    // Collapse floor: three distinct positions can never form the 4-vertex minimum.
+    var fewPos = TestFmtBuilder.Build(4, 6,
+        [0, 1, 2, 1, 2, 3, 2, 3, 4, 3, 4, 5],
+        [0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0]);
+    Check("decimate: collapse below four vertices refused", FmtMesh.TryDecimate(fewPos, 100) == null);
+
+    // Integration: decimation fallback, LOD precedence, apply/verify/restore.
+    var root = TestIndexBuilder.NewRoot("decimate");
+    var bundles = Path.Combine(root, "Bundles2");
+    var blobPath = "art/particles/fx/blob.fmt";
+    var ringPath = "art/particles/fx/mp_ring_lod00_ff.fmt";
+    var sibPath = "art/particles/fx/mp_ring_lod01_ff.fmt";
+    var monsterPath = "art/models/effects/monster_particles/m.fmt";
+    var big = TestFmtBuilder.Grid(9);
+    var small = TestFmtBuilder.Grid(5);
+    var indexPath = TestIndexBuilder.Build(bundles, new[]
+    {
+        (blobPath, big),
+        (ringPath, big),
+        (sibPath, small),
+        (monsterPath, big)
+    });
+    var game = SteamLibraryLocator.FromIndex(indexPath);
+    var appPaths = new AppPaths(Path.Combine(root, "home"));
+    appPaths.Ensure();
+    var service = new AppService(appPaths);
+    var (decPack, _) = service.BuildRules(game, "Decimate Test", "test");
+    RulePackStore.Save(decPack, Path.Combine(root, "pack.json"));
+
+    ApplyRequest Req(bool lod, bool dec, RiskTier tier) => new()
+    {
+        Game = game,
+        Pack = decPack,
+        RulePackPath = Path.Combine(root, "pack.json"),
+        Preset = "safe",
+        Ignore = IgnoreList.Default(),
+        MaxTier = tier,
+        WriteStrategy = WriteStrategy.CompressionOnly,
+        Compression = new CompressionOptions { MeshLod = lod, MeshDecimate = dec, DecimateStrength = 60 },
+        Force = true
+    };
+
+    var plan = service.BuildPlan(Req(false, true, RiskTier.Fx));
+    var blobChange = plan.Changes.FirstOrDefault(c => c.Path == blobPath);
+    Check("decimate: sibling-less mesh planned as DecimateMesh",
+        blobChange != null && blobChange.Strategy == StrategyKind.DecimateMesh &&
+        blobChange.Tier == RiskTier.Fx && blobChange.Replacement != null &&
+        ValidDecimation(big, blobChange.Replacement, 24));
+    Check("decimate: monster mesh still ignored",
+        plan.Ignored.Contains(monsterPath) && !plan.Changes.Any(c => c.Path == monsterPath));
+
+    var both = service.BuildPlan(Req(true, true, RiskTier.Fx));
+    Check("decimate: official LOD wins over decimation when a sibling exists",
+        both.Changes.First(c => c.Path == ringPath).Strategy == StrategyKind.SwapMeshLod &&
+        both.Changes.First(c => c.Path == blobPath).Strategy == StrategyKind.DecimateMesh);
+    Check("decimate: safe tier skips decimation",
+        service.BuildPlan(Req(false, true, RiskTier.Safe)).SkippedExperimental.Contains(blobPath));
+
+    var originalHash = HashUtil.Sha256File(indexPath);
+    var applied = service.Apply(Req(false, true, RiskTier.Fx));
+    using (var read = IndexSession.OpenReadOnly(indexPath, bundles))
+    {
+        read.TryGetFile(blobPath, out var blobRecord);
+        Check("decimate: live bytes equal the planned replacement",
+            blobChange!.Replacement != null &&
+            blobRecord!.Read().ToArray().SequenceEqual(blobChange.Replacement));
+    }
+    var restore = service.Restore(new RestoreRequest { Game = game });
+    Check("decimate: restore returns original bytes and hash",
+        restore.RestoredIndex &&
+        HashUtil.Sha256File(indexPath).Equals(originalHash, StringComparison.OrdinalIgnoreCase));
+    using (var read = IndexSession.OpenReadOnly(indexPath, bundles))
+    {
+        read.TryGetFile(blobPath, out var blobRecord);
+        Check("decimate: original mesh back after restore",
+            blobRecord!.Read().ToArray().SequenceEqual(big));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shader simplification: pass-through contract, whitelist, full loop (M3)
+// ---------------------------------------------------------------------------
+{
+    static byte[] U16Graph(string json)
+    {
+        var body = Encoding.Unicode.GetBytes(json);
+        var b = new byte[2 + body.Length];
+        b[0] = 0xFF; b[1] = 0xFE;
+        body.CopyTo(b, 2);
+        return b;
+    }
+
+    static string ComplexGraphJson()
+    {
+        var nodes = new List<string>
+        {
+            "{\"type\":\"InputAlbedoColor\",\"index\":0,\"stage\":\"Texturing\"}",
+            "{\"type\":\"InputEmissiveColor\",\"index\":0,\"stage\":\"Texturing\"}",
+            "{\"type\":\"AlbedoColor\",\"index\":0,\"stage\":\"Texturing\"}",
+            "{\"type\":\"EmissiveColor\",\"index\":0,\"stage\":\"Texturing\"}",
+            "{\"type\":\"ConstantUInt\",\"index\":0,\"custom_parameter\":\"Mode\"}",
+            "{\"type\":\"ConstantUInt\",\"index\":1,\"custom_parameter\":\"Strength\"}"
+        };
+        for (var i = 0; i < 7; i++) nodes.Add($"{{\"type\":\"Multiply\",\"index\":{i}}}");
+        for (var i = 0; i < 4; i++) nodes.Add($"{{\"type\":\"Lerp\",\"index\":{i}}}");
+        for (var i = 0; i < 6; i++) nodes.Add($"{{\"type\":\"SelectFloat3\",\"index\":{i}}}");
+        var links = new List<string>
+        {
+            "{\"src\":{\"type\":\"InputAlbedoColor\",\"index\":0,\"stage\":\"Texturing\",\"variable\":\"output\"},\"dst\":{\"type\":\"Multiply\",\"index\":0,\"variable\":\"input\"}}",
+            "{\"src\":{\"type\":\"Multiply\",\"index\":0,\"variable\":\"output\"},\"dst\":{\"type\":\"Lerp\",\"index\":0,\"variable\":\"input\"}}",
+            "{\"src\":{\"type\":\"Lerp\",\"index\":0,\"variable\":\"output\"},\"dst\":{\"type\":\"AlbedoColor\",\"index\":0,\"stage\":\"Texturing\",\"variable\":\"input\"}}",
+            "{\"src\":{\"type\":\"InputEmissiveColor\",\"index\":0,\"stage\":\"Texturing\",\"variable\":\"output\"},\"dst\":{\"type\":\"EmissiveColor\",\"index\":0,\"stage\":\"Texturing\",\"variable\":\"input\"}}"
+        };
+        return "{\"version\":6,\"shader_group\":[\"Material\",\"Temporary\"],\"nodes\":[" +
+               string.Join(",", nodes) + "],\"links\":[" + string.Join(",", links) +
+               "],\"unused_links\":[{\"src\":{\"type\":\"Multiply\",\"index\":3,\"variable\":\"output\"}}]}";
+    }
+
+    var graphPath = "metadata/effects/graphs/general/masks/mask_fresnelstatic.fxgraph";
+    var complex = U16Graph(ComplexGraphJson());
+    var simplified = FxGraphSimplify.TrySimplify(complex, graphPath);
+    Check("fxgraph: whitelisted complex graph simplifies",
+        simplified != null && simplified.Length < complex.Length &&
+        simplified[0] == 0xFF && simplified[1] == 0xFE);
+    if (simplified != null)
+    {
+        using var doc = System.Text.Json.JsonDocument.Parse(
+            Encoding.Unicode.GetString(simplified, 2, simplified.Length - 2));
+        var root = doc.RootElement;
+        Check("fxgraph: version and shader_group preserved",
+            root.GetProperty("version").GetInt32() == 6 &&
+            root.GetProperty("shader_group")[0].GetString() == "Material");
+        Check("fxgraph: unused_links dropped", !root.TryGetProperty("unused_links", out _));
+        var types = root.GetProperty("nodes").EnumerateArray()
+            .Select(n => n.GetProperty("type").GetString()!).ToList();
+        Check("fxgraph: inputs, registers and parameter declarations kept",
+            types.Contains("InputAlbedoColor") && types.Contains("AlbedoColor") &&
+            types.Contains("InputEmissiveColor") && types.Contains("EmissiveColor") &&
+            types.Count(t => t == "ConstantUInt") == 2);
+        Check("fxgraph: shading math removed",
+            !types.Contains("Multiply") && !types.Contains("Lerp") && !types.Contains("SelectFloat3"));
+        var links = root.GetProperty("links").EnumerateArray().ToList();
+        Check("fxgraph: pass-through rewiring",
+            links.Count == 2 &&
+            links.Any(l => l.GetProperty("src").GetProperty("type").GetString() == "InputAlbedoColor" &&
+                           l.GetProperty("dst").GetProperty("type").GetString() == "AlbedoColor" &&
+                           l.GetProperty("dst").GetProperty("variable").GetString() == "input") &&
+            links.Any(l => l.GetProperty("src").GetProperty("type").GetString() == "InputEmissiveColor"));
+        var keptKeys = root.GetProperty("nodes").EnumerateArray()
+            .Select(n => n.GetProperty("type").GetString() + ":" +
+                         (n.TryGetProperty("index", out var ix) ? ix.GetInt32() : 0)).ToHashSet();
+        Check("fxgraph: no dangling link endpoints",
+            links.All(l =>
+                keptKeys.Contains(l.GetProperty("src").GetProperty("type").GetString() + ":" +
+                                  (l.GetProperty("src").TryGetProperty("index", out var si) ? si.GetInt32() : 0)) &&
+                keptKeys.Contains(l.GetProperty("dst").GetProperty("type").GetString() + ":" +
+                                  (l.GetProperty("dst").TryGetProperty("index", out var di) ? di.GetInt32() : 0))));
+    }
+
+    Check("fxgraph: non-whitelisted names refused",
+        FxGraphSimplify.TrySimplify(complex, "metadata/effects/graphs/general/masks/mask_animated_particle.fxgraph") == null &&
+        FxGraphSimplify.TrySimplify(complex, "metadata/effects/graphs/general/rotate_local.fxgraph") == null &&
+        FxGraphSimplify.TrySimplify(complex, "metadata/effects/spells/fire/custom.fxgraph") == null);
+    Check("fxgraph: version 3 refused",
+        FxGraphSimplify.TrySimplify(U16Graph("{\"version\":3,\"lighting_disabled\":true}"), graphPath) == null);
+    Check("fxgraph: garbage refused",
+        FxGraphSimplify.TrySimplify(U16Graph("not json"), graphPath) == null &&
+        FxGraphSimplify.TrySimplify(new byte[] { 1, 2, 3 }, graphPath) == null);
+    Check("fxgraph: utf-16 big-endian refused",
+        FxGraphSimplify.TrySimplify(new byte[] { 0xFE, 0xFF, 0, 123 }, graphPath) == null);
+    var utf8 = Encoding.UTF8.GetBytes(ComplexGraphJson());
+    var utf8Out = FxGraphSimplify.TrySimplify(utf8, graphPath);
+    Check("fxgraph: utf-8 in, utf-8 out",
+        utf8Out != null && utf8Out[0] != 0xFF &&
+        System.Text.Json.JsonDocument.Parse(Encoding.UTF8.GetString(utf8Out)).RootElement
+            .GetProperty("version").GetInt32() == 6);
+    var minimal = U16Graph("{\"version\":6,\"nodes\":[" +
+        "{\"type\":\"InputAlbedoColor\",\"index\":0},{\"type\":\"AlbedoColor\",\"index\":0}]," +
+        "\"links\":[]}");
+    Check("fxgraph: already-minimal graph refused (no meaningful reduction)",
+        FxGraphSimplify.TrySimplify(minimal, graphPath) == null);
+
+    // Integration: shader switch simplifies the whitelisted graph, monster copies stay ignored,
+    // and the whole apply/verify/restore loop carries the precomputed bytes.
+    var root2 = TestIndexBuilder.NewRoot("fxgraph");
+    var bundles = Path.Combine(root2, "Bundles2");
+    var monsterGraph = "metadata/effects/spells/monsters_effects/boss/graph/mask_fresnelstatic.fxgraph";
+    var indexPath = TestIndexBuilder.Build(bundles, new[]
+    {
+        (graphPath, complex),
+        (monsterGraph, complex),
+        ("metadata/effects/spells/fire/fireball.ao", Encoding.UTF8.GetBytes("AddAttached( 'x.pet', <root> );"))
+    });
+    var game = SteamLibraryLocator.FromIndex(indexPath);
+    var appPaths = new AppPaths(Path.Combine(root2, "home"));
+    appPaths.Ensure();
+    var service = new AppService(appPaths);
+    var (fxPack, _) = service.BuildRules(game, "FxGraph Test", "test");
+    RulePackStore.Save(fxPack, Path.Combine(root2, "pack.json"));
+
+    var request = new ApplyRequest
+    {
+        Game = game,
+        Pack = fxPack,
+        RulePackPath = Path.Combine(root2, "pack.json"),
+        Preset = "safe",
+        Ignore = IgnoreList.Default(),
+        MaxTier = RiskTier.Fx,
+        WriteStrategy = WriteStrategy.CompressionOnly,
+        Compression = new CompressionOptions { Shader = true },
+        Force = true
+    };
+    var plan = service.BuildPlan(request);
+    var graphChange = plan.Changes.FirstOrDefault(c => c.Path == graphPath);
+    Check("fxgraph: planned as SimplifyGraph instead of blanking",
+        graphChange != null && graphChange.Strategy == StrategyKind.SimplifyGraph &&
+        graphChange.Tier == RiskTier.Fx && graphChange.Replacement != null);
+    Check("fxgraph: monster copy gameplay-ignored",
+        plan.Ignored.Contains(monsterGraph) && !plan.Changes.Any(c => c.Path == monsterGraph));
+    Check("fxgraph: safe tier skips simplification",
+        service.BuildPlan(new ApplyRequest
+        {
+            Game = game, Pack = fxPack, RulePackPath = Path.Combine(root2, "pack.json"),
+            Preset = "safe", Ignore = IgnoreList.Default(), MaxTier = RiskTier.Safe,
+            WriteStrategy = WriteStrategy.CompressionOnly,
+            Compression = new CompressionOptions { Shader = true }, Force = true
+        }).SkippedExperimental.Contains(graphPath));
+
+    var originalHash = HashUtil.Sha256File(indexPath);
+    service.Apply(request);
+    using (var read = IndexSession.OpenReadOnly(indexPath, bundles))
+    {
+        read.TryGetFile(graphPath, out var graphRecord);
+        Check("fxgraph: live bytes equal the planned replacement",
+            graphChange!.Replacement != null &&
+            graphRecord!.Read().ToArray().SequenceEqual(graphChange.Replacement));
+        read.TryGetFile(monsterGraph, out var monRecord);
+        Check("fxgraph: monster graph untouched", monRecord!.Read().ToArray().SequenceEqual(complex));
+    }
+    var restore = service.Restore(new RestoreRequest { Game = game });
+    Check("fxgraph: restore returns original bytes and hash",
+        restore.RestoredIndex &&
+        HashUtil.Sha256File(indexPath).Equals(originalHash, StringComparison.OrdinalIgnoreCase));
+    using (var read = IndexSession.OpenReadOnly(indexPath, bundles))
+    {
+        read.TryGetFile(graphPath, out var graphRecord);
+        Check("fxgraph: original graph back after restore",
+            graphRecord!.Read().ToArray().SequenceEqual(complex));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Texture compression: BC7 decode, BC1/BC3 encode, DdsCodec policy (M4)
+// ---------------------------------------------------------------------------
+{
+    static uint Dxgi(byte[] d) => BitConverter.ToUInt32(d, 128);
+    static int TexW(byte[] d) => (int)BitConverter.ToUInt32(d, 16);
+    static int TexH(byte[] d) => (int)BitConverter.ToUInt32(d, 12);
+    static int TexMips(byte[] d) => (int)BitConverter.ToUInt32(d, 28);
+    static double Psnr(byte[] a, byte[] b)
+    {
+        double se = 0;
+        var n = Math.Min(a.Length, b.Length) / 4 * 3;
+        for (var i = 0; i < Math.Min(a.Length, b.Length); i += 4)
+            for (var k = 0; k < 3; k++)
+            {
+                var d = a[i + k] - b[i + k];
+                se += d * d;
+            }
+        var mse = se / n;
+        return mse == 0 ? 99.0 : 10 * Math.Log10(255 * 255 / mse);
+    }
+
+    // BC7 decoder known-answer: every mode reproduces a constant color exactly.
+    var whiteOk = true;
+    var blackOk = true;
+    Span<byte> px = stackalloc byte[64];
+    for (var mn = 1; mn <= 8; mn++)
+    {
+        Bc7Decoder.DecodeBlock(TestBc7Builder.ConstBlock(mn, 255, 255, 255, 255), px);
+        for (var t = 0; t < 16; t++)
+            if (px[t * 4] != 255 || px[t * 4 + 1] != 255 || px[t * 4 + 2] != 255 || px[t * 4 + 3] != 255)
+                whiteOk = false;
+        var expA = mn >= 5 ? 0 : 255; // alpha modes carry 0; RGB-only modes force opaque
+        Bc7Decoder.DecodeBlock(TestBc7Builder.ConstBlock(mn, 0, 0, 0, 0), px);
+        for (var t = 0; t < 16; t++)
+            if (px[t * 4] != 0 || px[t * 4 + 1] != 0 || px[t * 4 + 2] != 0 || px[t * 4 + 3] != expA)
+                blackOk = false;
+    }
+    Check("bc7: all 8 modes decode constant white exactly", whiteOk);
+    Check("bc7: all 8 modes decode constant black exactly", blackOk);
+
+    Bc7Decoder.DecodeBlock(TestBc7Builder.SmoothAlphaBlock(), px);
+    var smoothSeen = false;
+    for (var t = 0; t < 16; t++)
+        if (px[t * 4 + 3] is > 0 and < 255) smoothSeen = true;
+    Check("bc7: mode-6 dual-index decodes smooth alpha", smoothSeen);
+
+    Span<byte> reserved = stackalloc byte[16];
+    Bc7Decoder.DecodeBlock(reserved, px);
+    var reservedBlack = true;
+    for (var t = 0; t < 64; t++) if (px[t] != 0) reservedBlack = false;
+    Check("bc7: reserved mode 0 decodes transparent black", reservedBlack);
+
+    // BC1 round-trip: opaque gradient keeps color, cutout keeps its hard 0/255 silhouette.
+    const int n = 32;
+    var gradient = new byte[n * n * 4];
+    for (var y = 0; y < n; y++)
+        for (var x = 0; x < n; x++)
+        {
+            var o = (y * n + x) * 4;
+            gradient[o] = (byte)(x * 8); gradient[o + 1] = (byte)(y * 8);
+            gradient[o + 2] = 128; gradient[o + 3] = 255;
+        }
+    var bc1 = Bc1Encoder.EncodeImage(gradient, n, n);
+    var bc1Back = Bc1Encoder.DecodeImage(bc1, n, n);
+    var opaqueAlpha = true;
+    for (var i = 3; i < bc1Back.Length; i += 4) if (bc1Back[i] != 255) opaqueAlpha = false;
+    Check("bc1: opaque gradient round-trips with high fidelity", Psnr(gradient, bc1Back) > 30 && opaqueAlpha,
+        $"psnr={Psnr(gradient, bc1Back):F1}");
+    Check("bc1: opaque image is half the BC7 byte size", bc1.Length == ((n + 3) / 4) * ((n + 3) / 4) * 8);
+
+    var cutout = new byte[n * n * 4];
+    for (var y = 0; y < n; y++)
+        for (var x = 0; x < n; x++)
+        {
+            var o = (y * n + x) * 4;
+            cutout[o] = (byte)(x * 8); cutout[o + 1] = (byte)(y * 8); cutout[o + 2] = 200;
+            cutout[o + 3] = (byte)(x < n / 2 ? 255 : 0);
+        }
+    var cutBack = Bc1Encoder.DecodeImage(Bc1Encoder.EncodeImage(cutout, n, n), n, n);
+    var silhouette = true;
+    for (var y = 0; y < n; y++)
+        for (var x = 0; x < n; x++)
+        {
+            var want = x < n / 2 ? 255 : 0;
+            if (cutBack[(y * n + x) * 4 + 3] != want) silhouette = false;
+        }
+    Check("bc1: cutout silhouette (0/255 alpha) preserved exactly", silhouette);
+
+    // BC3 round-trip: smooth alpha gradient survives (the soft-particle path).
+    var soft = new byte[n * n * 4];
+    for (var y = 0; y < n; y++)
+        for (var x = 0; x < n; x++)
+        {
+            var o = (y * n + x) * 4;
+            soft[o] = 200; soft[o + 1] = 150; soft[o + 2] = 100;
+            soft[o + 3] = (byte)(x * 8);
+        }
+    var bc3 = Bc3Encoder.EncodeImage(soft, n, n);
+    var bc3Back = Bc3Encoder.DecodeImage(bc3, n, n);
+    double ase = 0;
+    for (var i = 3; i < soft.Length; i += 4) { var d = soft[i] - bc3Back[i]; ase += d * d; }
+    var alphaPsnr = 10 * Math.Log10(255 * 255 / (ase / (n * n)));
+    Check("bc3: smooth alpha round-trips with high fidelity", alphaPsnr > 30 && Psnr(soft, bc3Back) > 30,
+        $"alphaPsnr={alphaPsnr:F1}");
+    Check("bc3: block size is 16 bytes (same as BC7)", bc3.Length == ((n + 3) / 4) * ((n + 3) / 4) * 16);
+
+    // DdsCodec policy on synthesized BC7 fixtures.
+    var opaqueTex = TestBc7Builder.SolidDds(64, 64, 255, 255, 255, 255, mips: 3);
+    var sameRes = DdsCodec.TryCompress(opaqueTex, false);
+    Check("dds: opaque BC7 -> same-res BC1, dims & mips preserved, smaller",
+        sameRes != null && Dxgi(sameRes) == 71 && TexW(sameRes) == 64 && TexH(sameRes) == 64 &&
+        TexMips(sameRes) == 3 && sameRes.Length < opaqueTex.Length);
+
+    var softTex = TestBc7Builder.SmoothDds(64, 64, mips: 3);
+    Check("dds: smooth alpha refused for same-res BC1 (no honest win)",
+        DdsCodec.TryCompress(softTex, false) == null);
+
+    var softDown = DdsCodec.TryCompress(softTex, true);
+    Check("dds: smooth alpha downscale -> BC3 at half resolution, smaller",
+        softDown != null && Dxgi(softDown) == 77 && TexW(softDown) == 32 && TexH(softDown) == 32 &&
+        softDown.Length < softTex.Length);
+
+    var opaqueDown = DdsCodec.TryCompress(opaqueTex, true);
+    Check("dds: opaque downscale -> BC1 at half resolution",
+        opaqueDown != null && Dxgi(opaqueDown) == 71 && TexW(opaqueDown) == 32 && TexH(opaqueDown) == 32);
+
+    // Non-power-of-two sizes must terminate the mip chain at 1x1 (regression: floor-halving looped).
+    var oddOpaque = DdsCodec.TryCompress(TestBc7Builder.SolidDds(6, 6, 255, 255, 255, 255), true);
+    var oddSoft = DdsCodec.TryCompress(TestBc7Builder.SmoothDds(6, 6), true);
+    Check("dds: non-power-of-two downscale terminates at correct dims",
+        oddOpaque != null && TexW(oddOpaque) == 3 && TexH(oddOpaque) == 3 &&
+        oddSoft != null && TexW(oddSoft) == 3 && TexH(oddSoft) == 3 && Dxgi(oddSoft) == 77);
+
+    // Refusals: anything that is not single-array 2D BC7 is left untouched.
+    var legacy = (byte[])opaqueTex.Clone();
+    legacy[84] = (byte)'D'; legacy[85] = (byte)'X'; legacy[86] = (byte)'T'; legacy[87] = (byte)'1';
+    Check("dds: legacy DXT1 fourcc refused", DdsCodec.TryCompress(legacy, false) == null);
+    Check("dds: already-BC1 (dxgi 71) refused",
+        DdsCodec.TryCompress(TestBc7Builder.SolidDds(64, 64, 255, 255, 255, 255, dxgi: 71), false) == null);
+    Check("dds: cubemap refused",
+        DdsCodec.TryCompress(TestBc7Builder.SolidDds(64, 64, 255, 255, 255, 255, miscFlag: 4), false) == null);
+    Check("dds: texture array refused",
+        DdsCodec.TryCompress(TestBc7Builder.SolidDds(64, 64, 255, 255, 255, 255, arraySize: 2), false) == null);
+    Check("dds: truncated header refused", DdsCodec.TryCompress(opaqueTex[..100], false) == null);
+    Check("dds: 1x1 cannot downscale", DdsCodec.TryCompress(TestBc7Builder.SolidDds(1, 1, 255, 255, 255, 255), true) == null);
+}
+
+// ---------------------------------------------------------------------------
+// Texture compression integration: apply -> verify bytes -> restore (M4)
+// ---------------------------------------------------------------------------
+{
+    var root = TestIndexBuilder.NewRoot("texcompress");
+    var bundles = Path.Combine(root, "Bundles2");
+    var opaqueTex = TestBc7Builder.SolidDds(64, 64, 255, 255, 255, 255, mips: 3);
+    var softTex = TestBc7Builder.SmoothDds(64, 64, mips: 3);
+    var petBytes = new byte[] { 0x10, 0x20, 0x30 };
+    const string opaquePath = "art/particles/fire/opaque.dds";
+    const string softPath = "art/particles/fire/soft.dds";
+    const string monsterPath = "art/particles/monster_particles/m.dds";
+    const string petPath = "metadata/effects/spells/fire/burn.pet";
+    var indexPath = TestIndexBuilder.Build(bundles, new[]
+    {
+        (opaquePath, opaqueTex),
+        (softPath, softTex),
+        ("art/particles/fire/spark_n.dds", opaqueTex),
+        (monsterPath, opaqueTex),
+        (petPath, petBytes),
+        ("metadata/effects/spells/fire/fireball.ao", Encoding.UTF8.GetBytes("AddAttached( 'x.pet', <root> );"))
+    });
+    var game = SteamLibraryLocator.FromIndex(indexPath);
+    var appPaths = new AppPaths(Path.Combine(root, "home"));
+    appPaths.Ensure();
+    var service = new AppService(appPaths);
+    var (texPack, _) = service.BuildRules(game, "TexCompress Test", "test");
+    RulePackStore.Save(texPack, Path.Combine(root, "pack.json"));
+
+    ApplyRequest Req(CompressionOptions c) => new()
+    {
+        Game = game, Pack = texPack, RulePackPath = Path.Combine(root, "pack.json"),
+        Preset = "safe", Ignore = IgnoreList.Default(), MaxTier = RiskTier.Material,
+        WriteStrategy = WriteStrategy.CompressionOnly,
+        Compression = c, Force = true
+    };
+    static byte[] TexLive(IndexSession s, string p)
+    {
+        s.TryGetFile(p, out var r);
+        return r!.Read().ToArray();
+    }
+
+    var plan = service.BuildPlan(Req(new CompressionOptions { Texture = true }));
+    var opaqueChange = plan.Changes.FirstOrDefault(c => c.Path == opaquePath);
+    Check("tex integration: opaque planned as CompressDds (material tier, precomputed)",
+        opaqueChange != null && opaqueChange.Strategy == StrategyKind.CompressDds &&
+        opaqueChange.Tier == RiskTier.Material && opaqueChange.Replacement != null);
+    Check("tex integration: smooth same-res unsupported, normal map not a candidate, monster ignored",
+        plan.Unsupported.Contains(softPath) &&
+        !plan.Changes.Any(c => c.Path == "art/particles/fire/spark_n.dds") &&
+        plan.Ignored.Contains(monsterPath));
+
+    var originalHash = HashUtil.Sha256File(indexPath);
+    service.Apply(Req(new CompressionOptions { Texture = true }));
+    using (var read = IndexSession.OpenReadOnly(indexPath, bundles))
+    {
+        Check("tex integration: live opaque bytes equal planned BC1 replacement",
+            opaqueChange!.Replacement != null &&
+            TexLive(read, opaquePath).SequenceEqual(opaqueChange.Replacement) &&
+            BitConverter.ToUInt32(TexLive(read, opaquePath), 128) == 71);
+        Check("tex integration: smooth texture untouched on disk",
+            TexLive(read, softPath).SequenceEqual(softTex));
+        Check("tex integration: no compression change targets .pet",
+            !plan.Changes.Any(c => c.Path == petPath && CompressionOptions.IsCompressionStrategy(c.Strategy)));
+    }
+    var restore = service.Restore(new RestoreRequest { Game = game });
+    Check("tex integration: restore returns original index hash",
+        restore.RestoredIndex && HashUtil.Sha256File(indexPath).Equals(originalHash, StringComparison.OrdinalIgnoreCase));
+    using (var read = IndexSession.OpenReadOnly(indexPath, bundles))
+    {
+        Check("tex integration: original opaque BC7 back after restore",
+            TexLive(read, opaquePath).SequenceEqual(opaqueTex));
+        Check("tex integration: pet bytes back after restore",
+            TexLive(read, petPath).SequenceEqual(petBytes));
+    }
+
+    // Downscale tier: smooth now compresses to BC3, opaque to BC1, both at half resolution.
+    var downPlan = service.BuildPlan(Req(new CompressionOptions { Texture = true, TextureDownscale = true }));
+    var softChange = downPlan.Changes.FirstOrDefault(c => c.Path == softPath);
+    Check("tex integration: downscale plans smooth as BC3 CompressDds",
+        softChange != null && softChange.Strategy == StrategyKind.CompressDds && softChange.Replacement != null);
+    service.Apply(Req(new CompressionOptions { Texture = true, TextureDownscale = true }));
+    using (var read = IndexSession.OpenReadOnly(indexPath, bundles))
+    {
+        var liveSoft = TexLive(read, softPath);
+        var liveOpaque = TexLive(read, opaquePath);
+        Check("tex integration: downscale live soft is BC3 half-res, opaque is BC1 half-res",
+            BitConverter.ToUInt32(liveSoft, 128) == 77 && BitConverter.ToUInt32(liveSoft, 16) == 32 &&
+            BitConverter.ToUInt32(liveOpaque, 128) == 71 && BitConverter.ToUInt32(liveOpaque, 16) == 32);
+    }
+    var restore2 = service.Restore(new RestoreRequest { Game = game });
+    Check("tex integration: restore after downscale returns original hash",
+        restore2.RestoredIndex && HashUtil.Sha256File(indexPath).Equals(originalHash, StringComparison.OrdinalIgnoreCase));
+}
+
 
 Console.WriteLine();
 Console.WriteLine($"{tests - failures}/{tests} tests passed.");

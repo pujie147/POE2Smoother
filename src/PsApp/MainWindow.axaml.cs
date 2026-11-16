@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
@@ -52,6 +53,23 @@ public partial class MainWindow : Window
             TierItem.For(RiskTier.Material)
         };
         TierBox.SelectedItem = TierItem.For(_settings.EffectiveTier());
+        BlankStyleBox.ItemsSource = new[]
+        {
+            WriteStrategyItem.For(WriteStrategy.Template),
+            WriteStrategyItem.For(WriteStrategy.Empty),
+            WriteStrategyItem.For(WriteStrategy.CompressionOnly),
+            WriteStrategyItem.For(WriteStrategy.CompressThenTemplate),
+            WriteStrategyItem.For(WriteStrategy.CompressThenEmpty)
+        };
+        BlankStyleBox.SelectedItem = WriteStrategyItem.For(_settings.EffectiveWriteStrategy());
+        var compression = _settings.EffectiveCompression();
+        CompressTexCheck.IsChecked = compression.Texture;
+        TexDownscaleCheck.IsChecked = compression.TextureDownscale;
+        CompressShaderCheck.IsChecked = compression.Shader;
+        MeshLodCheck.IsChecked = compression.MeshLod;
+        MeshDecimateCheck.IsChecked = compression.MeshDecimate;
+        DecimateSlider.Value = compression.ClampedStrength;
+        UpdateCompressionUi();
         GroupFilterBox.ItemsSource = new[]
         {
             new GroupFilterItem("all", "全部 / All"),
@@ -379,6 +397,11 @@ public partial class MainWindow : Window
         if (_pack == null)
             return;
 
+        // CompressionOnly blanks nothing, so a "blanking rules skipped at this tier" hint would be
+        // misleading — the tier still gates compression, but no blanking rule is being held back.
+        if (CurrentWriteStrategy == WriteStrategy.CompressionOnly)
+            return;
+
         var selectedCount = _rows.Count(r => r.IsSelected);
         if (selectedCount == 0)
             return;
@@ -534,15 +557,18 @@ public partial class MainWindow : Window
             Preset = PresetBox.SelectedItem as string ?? "safe",
             Ignore = _ignore,
             MaxTier = CurrentTier,
+            WriteStrategy = CurrentWriteStrategy,
+            Compression = CurrentCompression,
             CategoryFilter = selected
         };
 
-        // The material tier gets its own confirmation with real numbers, and it replaces the
-        // four-second arm: it is the stricter gate, and clicking 应用 twice after an explicit
-        // "this can black out ordinary rendering" panel would only train people to click through it.
-        if (request.MaxTier == RiskTier.Material && !_materialConfirmed)
+        // Material blanking and render compression each get their own confirmation with real
+        // numbers, replacing the four-second arm: they are the stricter gates, and clicking 应用
+        // twice after an explicit panel would only train people to click through it.
+        var compressionStrategy = WriteStrategies.IsCompressionContaining(CurrentWriteStrategy);
+        if (!_materialConfirmed && (request.MaxTier == RiskTier.Material || compressionStrategy))
         {
-            SetBusy(true, "计算材质影响… / Planning");
+            SetBusy(true, "计算影响… / Planning");
             PatchPlan preview;
             try
             {
@@ -553,18 +579,65 @@ public partial class MainWindow : Window
                 SetBusy(false, null);
             }
 
-            if (preview.MaterialFiles > 0)
+            // Material-tier compression (textures) is not blanking: count material blanking
+            // separately so the panel never claims compressed files were emptied.
+            var blanked = preview.Changes
+                .Where(c => c.Tier == RiskTier.Material && !CompressionOptions.IsCompressionStrategy(c.Strategy))
+                .ToList();
+
+            if (blanked.Count > 0)
             {
+                var blankedAs = CurrentBlankStyle == BlankStyle.Template
+                    ? "替换成合法的最小空材质(原内容消失,但引用者能正常加载)"
+                    : "替换成 0 字节文件(旧行为:引用它的东西会加载失败)";
+                var blankedAsEn = CurrentBlankStyle == BlankStyle.Template
+                    ? "with a minimal valid empty material (original content gone, referrers still load it)"
+                    : "with a 0-byte file (old behaviour: whatever references it fails to load)";
+                var blankedBytes = blanked.Sum(c => c.Size);
+                var otherFiles = preview.Changes.Count - preview.MaterialFiles;
+                var compressionZh = preview.CompressionFiles > 0
+                    ? $"另有 {preview.CompressionFiles} 个文件做渲染压缩:保留视觉、降低负载,实验性,需实机验证。"
+                    : "";
+                var compressionEn = preview.CompressionFiles > 0
+                    ? $" Plus {preview.CompressionFiles} render-compressed files: visuals kept, cheaper to render — experimental, verify in game."
+                    : "";
                 MaterialConfirmText.Text =
-                    $"这个档位会把 {preview.MaterialFiles} 个 .mat 材质替换成空内容" +
-                    $"(抹掉 {Sizes.FormatBytes(preview.MaterialBytes)} 原始数据)," +
-                    $"外加 {preview.Changes.Count - preview.MaterialFiles} 个其它文件。 / " +
-                    $"This tier blanks {preview.MaterialFiles} .mat materials " +
-                    $"({Sizes.FormatBytes(preview.MaterialBytes)} of original content destroyed), " +
-                    $"plus {preview.Changes.Count - preview.MaterialFiles} other files.";
+                    $"这个档位会把 {blanked.Count} 个 .mat 材质{blankedAs}" +
+                    $"(丢弃 {Sizes.FormatBytes(blankedBytes)} 原始内容)," +
+                    $"外加 {otherFiles} 个其它文件。{compressionZh} / " +
+                    $"This tier blanks {blanked.Count} .mat materials {blankedAsEn} " +
+                    $"({Sizes.FormatBytes(blankedBytes)} of original content discarded), " +
+                    $"plus {otherFiles} other files.{compressionEn}";
+                MaterialConfirmWarning.Text =
+                    "材质被置空后,普通渲染(地面/角色/物体)可能一起变黑或缺失;工具会先备份,之后可以只撤销材质。 / " +
+                    "Blanking materials can also black out ordinary rendering (ground, characters, objects). A backup is always written first, and materials can be restored on their own afterwards.";
+                MaterialConfirmButton.Content = "确认置空材质 / Confirm material blanking";
                 MaterialConfirmPanel.IsVisible = true;
-                SetStatus("请在下方确认是否置空材质。 / Confirm material blanking in the panel below.", warn: true);
+                SetStatus("请在下方确认材质档变更。 / Confirm material-tier changes in the panel below.", warn: true);
                 AppendLog("等待材质确认 / waiting for material confirmation");
+                return;
+            }
+
+            if (compressionStrategy && (preview.CompressionFiles > 0 || preview.CompressionFallbackFiles > 0))
+            {
+                var fallbackZh = preview.CompressionFallbackFiles > 0
+                    ? $"其中 {preview.CompressionFallbackFiles} 个无法压缩,回退置空。"
+                    : "";
+                var fallbackEn = preview.CompressionFallbackFiles > 0
+                    ? $" {preview.CompressionFallbackFiles} of them cannot be compressed and fall back to blanking."
+                    : "";
+                MaterialConfirmText.Text =
+                    $"将对 {preview.CompressionFiles} 个文件做渲染压缩:保留视觉、降低负载。{fallbackZh}" +
+                    "实验性,需实机验证。 / " +
+                    $"Render-compressing {preview.CompressionFiles} files: visuals kept, cheaper to render.{fallbackEn} " +
+                    "Experimental — verify in game.";
+                MaterialConfirmWarning.Text =
+                    "渲染压缩是实验性的:压缩后的特效需实机验证;工具会先备份,之后可以还原。 / " +
+                    "Render compression is experimental: verify the compressed effects in game. A backup is always written first, and you can restore afterwards.";
+                MaterialConfirmButton.Content = "确认压缩 / Confirm compression";
+                MaterialConfirmPanel.IsVisible = true;
+                SetStatus("请在下方确认渲染压缩变更。 / Confirm render-compression changes in the panel below.", warn: true);
+                AppendLog("等待压缩确认 / waiting for compression confirmation");
                 return;
             }
         }
@@ -801,6 +874,8 @@ public partial class MainWindow : Window
             Ignore = _ignore.Prefixes.ToList()
         };
         profile.SetTier(CurrentTier);
+        profile.SetWriteStrategy(CurrentWriteStrategy);
+        profile.Compression = CurrentCompression;
         _profiles.Save(profile);
         RefreshProfiles();
         ProfileStatus.Text = $"已保存 / Saved: {name}";
@@ -825,6 +900,15 @@ public partial class MainWindow : Window
         _loading = true;
         PresetBox.SelectedItem = profile.Preset;
         TierBox.SelectedItem = TierItem.For(profile.EffectiveTier());
+        BlankStyleBox.SelectedItem = WriteStrategyItem.For(profile.EffectiveWriteStrategy());
+        var compression = profile.EffectiveCompression();
+        CompressTexCheck.IsChecked = compression.Texture;
+        TexDownscaleCheck.IsChecked = compression.TextureDownscale;
+        CompressShaderCheck.IsChecked = compression.Shader;
+        MeshLodCheck.IsChecked = compression.MeshLod;
+        MeshDecimateCheck.IsChecked = compression.MeshDecimate;
+        DecimateSlider.Value = compression.ClampedStrength;
+        UpdateCompressionUi();
         IgnoreBox.Text = string.Join(Environment.NewLine, profile.Ignore);
         RefreshCategories();
 
@@ -940,6 +1024,68 @@ public partial class MainWindow : Window
     /// uninitialised ComboBox (no selection yet) means the safest tier, not "include everything".</summary>
     private RiskTier CurrentTier => (TierBox.SelectedItem as TierItem)?.Tier ?? RiskTier.Safe;
 
+    /// <summary>The write strategy the user is currently armed with. Anything unrecognised means
+    /// template, never zero bytes or compression: a half-initialised combo box must not silently
+    /// downgrade the client or start compressing.</summary>
+    private WriteStrategy CurrentWriteStrategy =>
+        (BlankStyleBox.SelectedItem as WriteStrategyItem)?.Strategy ?? WriteStrategy.Template;
+
+    /// <summary>What a blanking strategy writes, derived from the current write strategy.</summary>
+    private BlankStyle CurrentBlankStyle => WriteStrategies.ToBlankStyle(CurrentWriteStrategy);
+
+    /// <summary>Compression is opt-in per class: an uninitialised check box means off, never on.</summary>
+    private CompressionOptions CurrentCompression => new()
+    {
+        Texture = CompressTexCheck.IsChecked == true,
+        TextureDownscale = TexDownscaleCheck.IsChecked == true,
+        Shader = CompressShaderCheck.IsChecked == true,
+        MeshLod = MeshLodCheck.IsChecked == true,
+        MeshDecimate = MeshDecimateCheck.IsChecked == true,
+        DecimateStrength = (int)DecimateSlider.Value
+    };
+
+    private void UpdateCompressionUi()
+    {
+        // The compression toggles only appear when the chosen write strategy actually compresses.
+        CompressionPanel.IsVisible = WriteStrategies.IsCompressionContaining(CurrentWriteStrategy);
+        TexDownscaleCheck.IsEnabled = CompressTexCheck.IsChecked == true;
+        DecimateSlider.IsEnabled = MeshDecimateCheck.IsChecked == true;
+        DecimateValueText.Text = ((int)DecimateSlider.Value).ToString();
+    }
+
+    private void OnCompressionChanged(object? sender, RoutedEventArgs e)
+    {
+        if (_loading)
+            return;
+
+        _materialConfirmed = false;
+        MaterialConfirmPanel.IsVisible = false;
+        UpdateCompressionUi();
+        SaveSettings();
+    }
+
+    private void OnDecimateStrengthChanged(object? sender, RangeBaseValueChangedEventArgs e)
+    {
+        DecimateValueText.Text = ((int)e.NewValue).ToString();
+        if (_loading)
+            return;
+
+        SaveSettings();
+    }
+
+    private void OnWriteStrategyChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (_loading)
+            return;
+
+        // Changing the strategy invalidates any pending confirmation, exactly like changing the tier.
+        _materialConfirmed = false;
+        MaterialConfirmPanel.IsVisible = false;
+        UpdateCompressionUi();
+        SaveSettings();
+        AppendLog($"写法策略:{WriteStrategies.ToKey(CurrentWriteStrategy)} / write strategy “{WriteStrategies.ToKey(CurrentWriteStrategy)}”");
+    }
+
     private void OnTierChanged(object? sender, SelectionChangedEventArgs e)
     {
         // Selecting an item during construction must not persist a half-restored window
@@ -977,6 +1123,8 @@ public partial class MainWindow : Window
         _settings.LastPreset = PresetBox.SelectedItem as string ?? _settings.LastPreset;
         _settings.Language = LanguageBox.SelectedItem as string ?? _settings.Language;
         _settings.SetTier(CurrentTier);
+        _settings.SetWriteStrategy(CurrentWriteStrategy);
+        _settings.Compression = CurrentCompression;
         if (_game != null)
             _settings.LastTargetPath = _game.TargetPath;
         SettingsStore.Save(_paths, _settings);
@@ -1077,6 +1225,21 @@ public sealed record TierItem(RiskTier Tier, string Label)
 public sealed record RestoreScopeItem(string Label, IReadOnlySet<RiskTier>? Tiers)
 {
     public override string ToString() => Label;
+}
+
+/// <summary>One entry of the write-strategy combo box (see TierItem for why the label is a record).</summary>
+public sealed record WriteStrategyItem(WriteStrategy Strategy, string Label)
+{
+    public override string ToString() => Label;
+
+    public static WriteStrategyItem For(WriteStrategy strategy) => strategy switch
+    {
+        WriteStrategy.Empty => new WriteStrategyItem(WriteStrategy.Empty, "0 字节(旧行为)/ 0-byte file"),
+        WriteStrategy.CompressionOnly => new WriteStrategyItem(WriteStrategy.CompressionOnly, "只渲染压缩 / Render-compress only"),
+        WriteStrategy.CompressThenTemplate => new WriteStrategyItem(WriteStrategy.CompressThenTemplate, "先压缩,无法压缩则合法空资源 / Compress, else valid empty"),
+        WriteStrategy.CompressThenEmpty => new WriteStrategyItem(WriteStrategy.CompressThenEmpty, "先压缩,无法压缩则 0 字节 / Compress, else 0-byte"),
+        _ => new WriteStrategyItem(WriteStrategy.Template, "合法空资源 / valid empty resource")
+    };
 }
 
 public sealed record GroupFilterItem(string Id, string Label)

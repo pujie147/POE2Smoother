@@ -326,8 +326,10 @@ if (kindText.Text?.Contains("Steam") != true)
     const string loopPetPath = "metadata/effects/spells/fire/burn.pet";
     const string loopMatPath = "metadata/effects/spells/fire/shield.mat";
     var loopOriginalAo = "version 1\nAddAttached( 'metadata/effects/spells/fire/burn.pet', <root> );\nKeepThis();\n";
-    var loopPetBytes = new byte[] { 1, 2, 3, 4, 5, 6, 7 };
-    var loopMatBytes = new byte[] { 8, 9, 10, 11 };
+    // Both originals are deliberately bigger than any blank template, so "the template was written"
+    // can never be satisfied by a file that was never touched.
+    var loopPetBytes = PsTests.BlankAssert.Fixture(loopPetPath);
+    var loopMatBytes = PsTests.BlankAssert.Fixture(loopMatPath);
     var loopBundles = Path.Combine(loopRoot, "Bundles2");
     var loopIndex = PsTests.TestIndexBuilder.Build(loopBundles, new (string, byte[])[]
     {
@@ -429,8 +431,8 @@ if (kindText.Text?.Contains("Steam") != true)
     PumpUntil(ApplySettled, "fx apply");
     if (loopStatus.Text!.Contains("应用完成") != true)
         throw new Exception($"fx apply failed: {loopStatus.Text}");
-    if (LiveBytes(loopPetPath).Length != 0)
-        throw new Exception("fx tier must blank the .pet");
+    if (!PsTests.BlankAssert.IsTemplated(loopPetPath, LiveBytes(loopPetPath)))
+        throw new Exception("fx tier must blank the .pet with its template");
     if (LiveBytes(loopMatPath).SequenceEqual(loopMatBytes) != true)
         throw new Exception("fx tier must leave the .mat alone");
     if (!loopStatus.Text.Contains("材质 1"))
@@ -460,9 +462,9 @@ if (kindText.Text?.Contains("Steam") != true)
         throw new Exception($"material apply failed: {loopStatus.Text}");
     if (!loopStatus.Text.Contains("3/3 active") || !loopStatus.Text.Contains("实验 0 / experimental"))
         throw new Exception($"the material tier should move both skipped rules into the change set: {loopStatus.Text}");
-    if (LiveBytes(loopPetPath).Length != 0)
+    if (!PsTests.BlankAssert.IsTemplated(loopPetPath, LiveBytes(loopPetPath)))
         throw new Exception("material apply must blank the .pet");
-    if (LiveBytes(loopMatPath).Length != 0)
+    if (!PsTests.BlankAssert.IsTemplated(loopMatPath, LiveBytes(loopMatPath)))
         throw new Exception("material apply must blank the .mat");
     if (Encoding.UTF8.GetString(LiveBytes(loopAoPath)).Contains("AddAttached"))
         throw new Exception("material apply must keep suppressing the .ao");
@@ -485,7 +487,7 @@ if (kindText.Text?.Contains("Steam") != true)
         throw new Exception($"scoped restore failed: {loopStatus.Text}");
     if (LiveBytes(loopMatPath).SequenceEqual(loopMatBytes) != true)
         throw new Exception("a material-scoped restore must give the .mat bytes back");
-    if (LiveBytes(loopPetPath).Length != 0)
+    if (!PsTests.BlankAssert.IsTemplated(loopPetPath, LiveBytes(loopPetPath)))
         throw new Exception("a material-scoped restore must leave the blanked .pet alone");
     if (Encoding.UTF8.GetString(LiveBytes(loopAoPath)).Contains("AddAttached"))
         throw new Exception("a material-scoped restore must leave the .ao surgery in place");
@@ -564,6 +566,63 @@ if (kindText.Text?.Contains("Steam") != true)
         throw new Exception("re-applied unticked run must leave the .pet alone");
     ClickTwice(loopRestore);
     PumpUntil(RestoreSettled, "final restore");
+    if (LiveBytes(loopAoPath).SequenceEqual(Encoding.UTF8.GetBytes(loopOriginalAo)) != true)
+        throw new Exception("the loop must end on the original client bytes");
+
+    // The "write strategy" box is the escape hatch back to the old 0-byte behaviour. A fresh window
+    // must start on templates, and the choice has to survive both a save and a restart.
+    var loopStyleBox = loopWindow.FindControl<ComboBox>("BlankStyleBox")
+                       ?? throw new Exception("BlankStyleBox missing");
+    WriteStrategyItem PickStrategy(WriteStrategy want) =>
+        loopStyleBox.Items.OfType<WriteStrategyItem>().First(i => i.Strategy == want);
+    if (loopStyleBox.Items.OfType<WriteStrategyItem>().Count() != 5)
+        throw new Exception("the write-strategy box must offer all five strategies");
+    if ((loopStyleBox.SelectedItem as WriteStrategyItem)?.Strategy != WriteStrategy.Template)
+        throw new Exception("a window must default to writing valid empty templates");
+    if ((new MainWindow()).FindControl<ComboBox>("BlankStyleBox") is not { SelectedItem: WriteStrategyItem fresh }
+        || fresh.Strategy != WriteStrategy.Template)
+        throw new Exception("a reopened window must default to the template style too");
+    // The compression toggles only appear for a compression-containing strategy.
+    if (loopWindow.FindControl<Border>("CompressionPanel")!.IsVisible)
+        throw new Exception("compression panel must be hidden for the template strategy");
+
+    loopStyleBox.SelectedItem = PickStrategy(WriteStrategy.Empty);
+    Dispatcher.UIThread.RunJobs();
+    SetTier(RiskTier.Material);
+    loopApply.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+    PumpUntil(() => loopWindow.FindControl<Border>("MaterialConfirmPanel")!.IsVisible == true, "material panel (empty style)");
+    loopWindow.FindControl<Button>("MaterialConfirmButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+    PumpUntil(ApplySettled, "empty-style apply");
+    if (LiveBytes(loopPetPath).Length != 0)
+        throw new Exception("--blank-style empty must still write a 0-byte file");
+    saveSettings.Invoke(loopWindow, null);
+    var styleSettings = File.ReadAllText(Path.Combine(home, "settings.json"));
+    if (!styleSettings.Contains("\"BlankStyle\": \"empty\"") || !styleSettings.Contains("\"WriteStrategy\": \"empty\""))
+        throw new Exception($"the write strategy and its legacy mirror must persist: {styleSettings}");
+    if ((new MainWindow()).FindControl<ComboBox>("BlankStyleBox") is not { SelectedItem: WriteStrategyItem reopenedStyle }
+        || reopenedStyle.Strategy != WriteStrategy.Empty)
+        throw new Exception("a reopened window must restore the empty-byte style");
+
+    // A compression-containing strategy reveals the compression panel; a blanking one hides it.
+    loopStyleBox.SelectedItem = PickStrategy(WriteStrategy.CompressThenTemplate);
+    Dispatcher.UIThread.RunJobs();
+    if (!loopWindow.FindControl<Border>("CompressionPanel")!.IsVisible)
+        throw new Exception("compression panel must appear for a compress-then strategy");
+    loopStyleBox.SelectedItem = PickStrategy(WriteStrategy.CompressionOnly);
+    Dispatcher.UIThread.RunJobs();
+    if (!loopWindow.FindControl<Border>("CompressionPanel")!.IsVisible)
+        throw new Exception("compression panel must appear for compress-only");
+
+    // Back to templates and everything clean again, so the loop still ends on original bytes.
+    loopStyleBox.SelectedItem = PickStrategy(WriteStrategy.Template);
+    if (loopWindow.FindControl<Border>("CompressionPanel")!.IsVisible)
+        throw new Exception("compression panel must hide again for the template strategy");
+    Dispatcher.UIThread.RunJobs();
+    ClickTwice(loopRestore);
+    PumpUntil(RestoreSettled, "restore after empty style");
+    SetTier(RiskTier.Safe);
+    if (LiveBytes(loopPetPath).SequenceEqual(loopPetBytes) != true)
+        throw new Exception("the loop must still end on the original .pet bytes");
     if (LiveBytes(loopAoPath).SequenceEqual(Encoding.UTF8.GetBytes(loopOriginalAo)) != true)
         throw new Exception("the loop must end on the original client bytes");
 }

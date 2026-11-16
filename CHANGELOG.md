@@ -6,6 +6,67 @@
 This file is the source of truth for release notes. Pushing a `vX.Y.Z` tag makes CI build the AppImage
 and publish the matching section below as the release body — keep the heading exactly equal to the tag.
 
+## v1.3 – 2026-11-16
+
+### 变更 / Changed
+
+- **「实验性资源」勾选拆成三档**:`safe`(默认,只做 `.ao` 脚本手术与 `.dds` 透明化)、
+  `fx`(再把 `.pet`/`.epk`/`.fxgraph`/`.aoc` 置空)、`material`(再置空 `.mat`)。
+  一次 `safe` + 全实验性在本机实测动过 73,581 个文件,其中 `.mat` 50,399 —— 旧版把这五类塞在同一个勾选里。
+  GUI 换成「风险档」下拉框,选到材质时会在窗口内再确认并列出将被丢弃的原始字节数;CLI 是
+  `--experimental safe|fx|material`,旧写法 `--include-experimental` 仍等于 `material`(语义没变)。
+  *The single "experimental" tick became three tiers — `safe`, `fx`, `material` — because one tick
+  bundled 50,399 shared materials with the effect-only blanking. The GUI is a risk-tier drop-down
+  (material asks for an in-window confirmation listing the bytes to be discarded); the CLI gained
+  `--experimental`, and `--include-experimental` still means `material`.*
+- **置空不再写 0 字节,改写该格式的最小合法空资源**(2–42 字节,形状取自客户端自带的
+  `empty.epk` / `00_null.pet` / `empty.mat` / `renderorder_02.fxgraph`)。「被置空的文件无害」因此不再依赖
+  「还有谁在引用它」这个信息。想退回旧行为:GUI「写法策略」下拉框 / `--blank-style empty`。
+  *Blanked files now get a minimal valid empty resource of their own format instead of 0 bytes, so
+  safety no longer depends on knowing who references them; `--blank-style empty` restores the old bytes.*
+- `RestoreResult.RestoredIndex` 只在「整个 index 被备份替换」时为真;逐文件还原改由
+  `FilesRestored` / `FilesKept` 报告。
+
+### 新增 / Added
+
+- **按档位撤销**:`pscli restore --undo-tiers material` / 主页「还原范围」可以只撤材质、保住脚本手术;
+  未撤销的条目继续被跟踪,部分还原后的索引会被认作「本工具留下的」而不会被误判成游戏更新。
+  *Scoped restore: undo one tier and keep the rest suppressed; the partially restored index is still
+  recognised as this tool's own work.*
+- **`pscli health`(只读)**:把客户端日志里带资源路径的 CRIT/WARN 与本次写入的文件求交集,列出可疑项。
+  日志里带路径的行很稀疏,所以「无告警」只是弱证据 —— 命令自己会这么说明。
+  *`pscli health` crosses asset-path complaints in the client log with the files this run wrote.*
+- **应用后读回校验**:提交完成后、写 `state.json` 之前,重新打开目标核对每条记录的 size/bundle 坐标,
+  并对每个自定义 bundle 的首尾记录做内容哈希;不一致则还原备份且不留下描述不存在补丁的 state。
+  *Post-apply verification re-opens the committed target and checks every record, restoring the
+  backup on a mismatch instead of writing state describing a patch that is not there.*
+
+- **渲染压缩(实验性,默认全关)**:与「置空」并列的另一条路 —— 保留视觉、降渲染负载。Effects tab 新增四个开关
+  (贴图同分辨率 BC7→BC1、网格官方 LOD 替换、shader 精简、网格减面)+ 减面强度滑条 + 降分辨率激进取向;
+  CLI `--compress-tex` / `--tex-downscale` / `--compress-shader` / `--mesh-lod` / `--mesh-decimate <0-100>`。
+  双重门控(风险档 + 开关),启用某类压缩则该类不再置空;只动 `.dds`/`.fxgraph`/`.fmt`,跳过怪物/Gameplay 预告,
+  **`.pet` 配置永不触碰**。贴图 codec 离线逐字节验证(BC7 解码 vs 独立 Python 移植在 26 样本/246 mip 一致;
+  BC1 编码 vs 原型一致);同分辨率只压 opaque/cutout、平滑 alpha 拒绝,降分辨率档对软粒子用 BC3 保留柔和边缘
+  (-75%)、opaque 用 BC1(-87%)。全部走既有备份/校验/还原链路,还原零改动。**仍需实机 A/B 才能转正**(见 docs §7.3)。
+  *Render compression (experimental, off by default): another path beside blanking that keeps visuals but lowers
+  render load — four toggles (same-res BC7→BC1 textures, official mesh LOD swap, shader simplification, mesh
+  decimation) plus a decimation-strength slider and an aggressive downscale option. Dual-gated by risk tier and
+  switch; a compressed class is no longer blanked. Only `.dds`/`.fxgraph`/`.fmt` are touched, monsters and gameplay
+  telegraphs are skipped, and `.pet` configs are never modified. Texture codecs are verified byte-for-byte offline;
+  same-res compresses only opaque/cutout (smooth alpha refused), while the downscale tier keeps soft particles soft
+  via BC3 (-75%) and opaque via BC1 (-87%). Reuses the existing backup/verify/restore chain with zero-change
+  restore. Still requires in-game A/B before promotion (docs §7.3).*
+
+### 修复 / Fixed
+
+- **`.ao` 脚本手术漏掉生产写法**:真机里 `AddEffectPack( "…epk" )` 用双引号、
+  `AddAttached( '…', <lock>)` 第二参不是 `<root>`,旧正则一种都不匹配 —— 这些挂接调用从未被剥掉。
+  现在引号与占位符两种形态都覆盖;赋值语句的右值降级成 `nil`,不再留下 `parent_ao.` 这种悬空残骸。
+  *Script surgery missed the shapes production actually uses (double-quoted `AddEffectPack`,
+  `<lock>` second arguments), and left `x = parent_ao.` residue behind; both are fixed.*
+- 重启后「实验性资源」的选择不再被静默清掉(改档位后同理,恢复赋值全部排在 `_loading` 保护区内)。
+  *The tier choice survives a restart; restoring it runs inside the construction guard.*
+
 ## v1.2 – 2026-11-12
 
 ### 新增 / Added

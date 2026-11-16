@@ -65,7 +65,7 @@ internal sealed class SteamTargetStore : TargetStore
 
 internal sealed class GgpkTargetStore : TargetStore
 {
-    private const string CustomBundleDirName = "LibGGPK3";
+    private const string CustomBundleDirName = BackupManager.CustomBundleDirName;
     private const string IndexEntryName = "_.index.bin";
     private const string CustomBundlesDirRelative = "Bundles2/" + CustomBundleDirName;
 

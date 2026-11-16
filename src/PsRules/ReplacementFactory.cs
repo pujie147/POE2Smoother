@@ -34,9 +34,35 @@ public static class ReplacementFactory
 
     private static readonly Lazy<byte[]> TransparentDdsLazy = new(CreateTransparentDds);
 
-    public static byte[] TransparentDds => TransparentDdsLazy.Value;
+    /// <summary>A fresh copy every time: handing out the cached array would let one careless caller
+    /// poison every later write.</summary>
+    public static byte[] TransparentDds => (byte[])TransparentDdsLazy.Value.Clone();
 
-    public static byte[] Create(ReadOnlySpan<byte> original, string path, StrategyKind strategy)
+    /// <summary>
+    /// The replacement for a blanking strategy, or null when <paramref name="strategy"/> does not
+    /// blank. One function is the single source of truth: the apply path writes exactly what the
+    /// plan-time "is it already blank?" check expects, so the two can never disagree about a length.
+    /// </summary>
+    public static byte[]? BlankReplacement(StrategyKind strategy, BlankStyle style)
+    {
+        if (style == BlankStyle.EmptyBytes)
+            return BlankTemplates.IsBlanking(strategy) ? [] : null;
+
+        return strategy switch
+        {
+            StrategyKind.NullPet => BlankTemplates.Pet,
+            StrategyKind.NullEffectPack => BlankTemplates.EffectPack,
+            StrategyKind.NullMaterial => BlankTemplates.Material,
+            StrategyKind.NullGraph => BlankTemplates.Graph,
+            // `.aoc` has no known template: the client ships zero files with that extension, so this
+            // strategy is dead code on the only client measured and there is nothing to imitate.
+            StrategyKind.Empty => [],
+            _ => null
+        };
+    }
+
+    public static byte[] Create(ReadOnlySpan<byte> original, string path, StrategyKind strategy,
+        BlankStyle style = BlankStyle.Template)
     {
         if (strategy == StrategyKind.Auto)
         {
@@ -44,14 +70,14 @@ public static class ReplacementFactory
                 strategy = StrategyKind.Keep;
         }
 
+        // Blanking never needs the original bytes, so callers pass an empty span for it.
+        var blank = BlankReplacement(strategy, style);
+        if (blank != null)
+            return blank;
+
         return strategy switch
         {
             StrategyKind.Keep => original.ToArray(),
-            StrategyKind.Empty => [],
-            StrategyKind.NullPet => [],
-            StrategyKind.NullMaterial => [],
-            StrategyKind.NullGraph => [],
-            StrategyKind.NullEffectPack => [],
             StrategyKind.TransparentDds => TransparentDds,
             StrategyKind.StripAttachments => StripAttachments(original),
             _ => original.ToArray()

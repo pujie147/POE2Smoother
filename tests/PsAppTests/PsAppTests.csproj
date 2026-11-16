@@ -12,6 +12,7 @@
     <!-- 与核心测试共用合成 index 构造器:GUI 的「勾选实验性 → apply → restore」回路
          需要一个真实可写的 Bundles2,而不是假的 _game 字段。 -->
     <Compile Include="../PsTests/TestIndexBuilder.cs" />
+    <Compile Include="../PsTests/BlankAssert.cs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/PsApp/PsApp.csproj" />

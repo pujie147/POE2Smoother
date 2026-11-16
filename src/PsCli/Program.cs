@@ -10,14 +10,16 @@ internal static class Cli
     private static readonly HashSet<string> FlagOptions = new(StringComparer.Ordinal)
     {
         "help", "yes", "keep", "force", "json", "clean-custom", "clean-only",
-        "dry-run", "include-experimental", "text", "prune"
+        "dry-run", "include-experimental", "text", "prune",
+        "compress-tex", "tex-downscale", "compress-shader", "mesh-lod", "mesh-decimate"
     };
 
     private static readonly HashSet<string> ValueOptions = new(StringComparer.Ordinal)
     {
         "index", "bundles", "filter", "limit", "out", "game-path", "backup-dir", "backup",
         "path", "content", "game", "ggpk", "pack", "preset", "ignore", "name", "build",
-        "language", "profile", "categories", "action", "entry", "index-url", "experimental", "undo-tiers"
+        "language", "profile", "categories", "action", "entry", "index-url", "experimental", "undo-tiers", "blank-style", "log",
+        "decimate-strength"
     };
 
     public static int Run(string[] args)
@@ -56,6 +58,7 @@ internal static class Cli
                 "read-file" => ReadFileCommand.Run(parsed),
                 "detect" => DetectCommand.Run(parsed),
                 "status" => StatusCommand.Run(parsed),
+                "health" => HealthCommand.Run(parsed),
                 "build-rules" => BuildRulesCommand.Run(parsed),
                 "list-rules" => ListRulesCommand.Run(parsed),
                 "plan" => PlanCommand.Run(parsed),
@@ -124,6 +127,9 @@ Usage:
   pscli plan        [--index <...>|--game <root>|--ggpk <file>] [--pack <pack.json>] --preset safe|clean|performance|full [--profile <name>] [--categories a,b] [--experimental safe|fx|material] [--json] [--out <plan.json>]
   pscli apply       [--index <...>|--game <root>|--ggpk <file>] [--pack <pack.json>] --preset safe|clean|performance|full [--profile <name>] [--categories a,b] [--yes] [--dry-run] [--force] [--experimental safe|fx|material] [--include-experimental]
   pscli status      [--index <...>|--game <root>|--ggpk <file>] [--json]
+  pscli health      [--index <...>|--game <root>|--ggpk <file>] [--log <file>] [--json]
+                    read-only: crosses the client log with the files this tool wrote, and lists any
+                    complaint that names one of them. Exit code 7 when something is suspect
   pscli restore     [--index <...>|--game <root>|--ggpk <file>] [--backup <file>|--index-url <url>] [--undo-tiers safe,fx,material] [--clean-only] [--force] [--yes]
                     default is a safe per-file restore after a game update (changed files are kept); --force restores the whole backup
                     --undo-tiers restores only those tiers: e.g. "--undo-tiers material" gives the .mat files back
@@ -147,13 +153,35 @@ Common options:
   --dry-run           Build the plan without writing
   --force             Continue despite game running / changed index / existing custom bundles
   --experimental <tier>   Risk ceiling: safe/off (default) = .ao surgery + transparent .dds only;
-                          fx = also blank .pet/.epk/.fxgraph/.aoc to zero bytes;
+                          fx = also blank .pet/.epk/.fxgraph/.aoc;
                           material = also blank .mat (materials are shared with ordinary
                           rendering, so this is the tier that can black out normal geometry)
   --include-experimental  Legacy alias for --experimental material (kept for old scripts)
+  --blank-style <how>     Write strategy — how blanking and compression combine:
+                          "template" (default) blank to a minimal valid empty resource;
+                          "empty" blank to a 0-byte file (the pre-v1.3 behaviour);
+                          "compress-only" only render-compress, never blank (uncompressible stays);
+                          "compress-then-template" compress first, blank to a valid resource if impossible;
+                          "compress-then-empty" compress first, blank to 0 bytes if impossible.
+                          The compression class flags below need a compress-* strategy; given without
+                          --blank-style they auto-select compress-then-template (old-script compat).
   --undo-tiers <list>     restore: comma-separated subset of safe,fx,material to undo (whole-index
                           options --backup/--index-url/--clean-only/--force cannot be combined with it)
   --json              JSON output
+
+Rendering-side compression (plan/apply; experimental, keeps visuals, needs in-game verification):
+  --compress-tex          particle textures: same-resolution BC7 -> BC1 (UV-safe, ~-50%).
+                          Needs --experimental material; only opaque/cutout, smooth alpha skipped
+  --tex-downscale         aggressive add-on to --compress-tex: also halve resolution.
+                          Soft particles keep soft edges via BC3 (-75%), opaque via BC1 (-87%);
+                          changes atlas UV cropping — use only after in-game A/B
+  --compress-shader       whitelisted .fxgraph graphs -> known-good simple graphs (needs fx tier)
+  --mesh-lod              effect meshes -> official LOD1/LOD2 sibling when one exists (needs fx tier)
+  --mesh-decimate         vertex-clustering decimation for meshes without a LOD sibling (fx tier)
+  --decimate-strength <n> 0-100, higher = fewer triangles kept (default 50)
+                          Compression never touches .pet configs or monster/gameplay assets.
+                          A compress-* strategy compresses candidates first; "compress-then-*"
+                          blanks the ones that cannot be compressed, "compress-only" leaves them.
 
 Windows: a game installed under Program Files needs an elevated terminal for apply/restore.
 Steam and standalone installs are detected automatically; set POE2_INDEX, POE2_ROOT or POE2_GGPK to override.

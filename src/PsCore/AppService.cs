@@ -21,6 +21,17 @@ public sealed class ApplyRequest
     /// </summary>
     public RiskTier MaxTier { get; init; } = RiskTier.Safe;
 
+    /// <summary>How each file class is rewritten: blank, compress, or compress-first with a blanking
+    /// fallback. The single user-facing choice; <see cref="BlankStyle"/> is derived from it.</summary>
+    public WriteStrategy WriteStrategy { get; init; } = WriteStrategy.Template;
+
+    /// <summary>What a blanking strategy writes, derived from <see cref="WriteStrategy"/>.</summary>
+    public BlankStyle BlankStyle => WriteStrategies.ToBlankStyle(WriteStrategy);
+
+    /// <summary>Opt-in rendering-side compression (textures/shaders/meshes). All off by default;
+    /// independent of the blanking preset, but still bounded by <see cref="MaxTier"/>.</summary>
+    public CompressionOptions Compression { get; init; } = new();
+
     public bool Force { get; init; }
     public bool DryRun { get; init; }
     public IReadOnlySet<string>? CategoryFilter { get; init; }
@@ -209,9 +220,22 @@ public sealed class AppService
                     if (!work.TryGetFile(change.Path, out var record) || record == null)
                         throw new FileNotFoundException("File disappeared from index", change.Path);
 
-                    var replacement = change.Strategy is StrategyKind.StripAttachments or StrategyKind.Auto
-                        ? ReplacementFactory.Create(record.Read().ToArray(), change.Path, change.Strategy)
-                        : ReplacementFactory.Create([], change.Path, change.Strategy);
+                    // Compression changes carry the exact bytes computed at plan time: a LOD swap
+                    // needs a sibling read, and re-running a codec here could only drift from what
+                    // the preview counted. The baseline rollback above guarantees the plan was
+                    // built against original content.
+                    byte[] replacement;
+                    if (change.Replacement != null)
+                    {
+                        replacement = change.Replacement;
+                    }
+                    else
+                    {
+                        replacement = change.Strategy is StrategyKind.StripAttachments or StrategyKind.Auto
+                            ? ReplacementFactory.Create(record.Read().ToArray(), change.Path, change.Strategy,
+                                request.BlankStyle)
+                            : ReplacementFactory.Create([], change.Path, change.Strategy, request.BlankStyle);
+                    }
 
                     // Capture the original coordinates before Write() rewrites the record,
                     // so a later per-file restore can redirect back into the official bundle.
@@ -476,9 +500,10 @@ public sealed class AppService
     /// catches neither:
     ///   (a) every entry, free — size and bundle/offset straight from the parsed index, no reads;
     ///   (b) content hash on a deterministic bounded set: the first and the last entry written into
-    ///       each custom bundle. Those are the two positions where a short write shows up.
-    /// Zero-length writes are fully covered by layer (a): their content is defined as "nothing", and
-    /// re-opening the enclosing bundle 73,000 times to prove that would cost more than the apply.
+    ///       each custom bundle. Those are the two positions where a short write shows up. The set is
+    ///       tiny by construction (one pair per touched bundle, and blanked files all share a bundle),
+    ///       so verifying templates — which are real bytes now, unlike the old zero-length writes —
+    ///       costs a couple of reads, not one per record.
     /// </summary>
     // Public so the negative path (a record that does not match) can be driven from the tests:
     // an integrity check that is only ever exercised when it passes proves nothing.
@@ -515,7 +540,7 @@ public sealed class AppService
                     $"Post-apply verification: {entry.Path} points at bundle '{bundlePath}', " +
                     $"apply wrote it into '{entry.AppliedBundlePath}'.");
 
-            if (boundaries.Contains(entry.Path) && entry.AppliedSize > 0)
+            if (boundaries.Contains(entry.Path))
             {
                 var live = record.Read().ToArray();
                 if (HashUtil.Sha256Bytes(live).Equals(entry.AppliedSha256, StringComparison.OrdinalIgnoreCase) == false)
@@ -824,10 +849,30 @@ public sealed class AppService
             ? request.Pack.Categories.Where(c => request.CategoryFilter.Contains(c.Id))
             : request.Pack.SelectedCategories(request.Preset);
 
+        var compressionOn = WriteStrategies.IsCompressionContaining(request.WriteStrategy);
+        var blankingOff = request.WriteStrategy == WriteStrategy.CompressionOnly;
+
         foreach (var category in categories)
         {
             foreach (var rule in category.Rules)
             {
+                // CompressionOnly never blanks. Otherwise blanking owns every file the compression
+                // pass will not actually visit: a candidate is root+extension+toggle aware, so a
+                // metadata .dds (a blanking root, outside the texture-compression root) still blanks
+                // instead of being silently dropped by a whole-extension skip.
+                if (blankingOff)
+                    continue;
+                if (compressionOn && CompressionPlanner.IsCandidate(rule.Path, request.Compression))
+                    continue;
+
+                // Compression strategies are planner-only (they need original bytes / siblings);
+                // a hand-written pack rule naming one is not something the blanking path can run.
+                if (CompressionOptions.IsCompressionStrategy(rule.Strategy))
+                {
+                    plan.Unsupported.Add(rule.Path);
+                    continue;
+                }
+
                 // Tier ceiling, checked before dedup/ignore/missing so the skip buckets stay
                 // comparable with the "attempted" totals the UI sums up.
                 if (rule.Tier > request.MaxTier)
@@ -863,27 +908,44 @@ public sealed class AppService
 
                 // A "change" that writes identical bytes is a no-op: filter it out so the
                 // reported count is the number of files that actually change.
-                if (rule.Strategy is StrategyKind.StripAttachments or StrategyKind.Auto)
+                // `Auto` is resolved here exactly the way ReplacementFactory.Create resolves it, so a
+                // hand-written Auto rule blanks through the same template path as a typed one.
+                var strategy = rule.Strategy;
+                if (strategy == StrategyKind.Auto)
+                    RulePackBuilder.TryGetStrategy(rule.Path, out strategy);
+
+                var blank = ReplacementFactory.BlankReplacement(strategy, request.BlankStyle);
+                if (blank != null)
                 {
-                    var original = record.Read().ToArray();
-                    var replacement = ReplacementFactory.Create(original, rule.Path, rule.Strategy);
-                    if (replacement.AsSpan().SequenceEqual(original))
+                    // Preview paths (pscli plan, apply without --yes, the GUI's material dialog) build
+                    // a plan against the *live* index, which is already blanked after an apply. Without
+                    // this they would report re-writing a template over the same template as a change —
+                    // inflating the counts the confirmation dialog shows and turning `plan`'s "nothing
+                    // to do" exit code into a lie.
+                    //
+                    // "Already blank" is keyed on *who wrote those bytes*, not on what they look like:
+                    // an official file that happens to be exactly as long as one of our templates must
+                    // still be rewritten. During Apply the baseline rollback runs first, so originals
+                    // are back in official bundles and real writes are never filtered out; a patch left
+                    // by an older build (0-byte stubs under the template style) does not match either,
+                    // so upgrading re-blanks those files instead of reporting "nothing to do".
+                    if (record.Size == blank.Length &&
+                        BackupManager.IsCustomBundlePath(record.BundleRecord?.Path))
                     {
                         plan.Unchanged.Add(rule.Path);
                         continue;
                     }
                 }
-                else if (rule.Strategy is StrategyKind.Empty or StrategyKind.NullPet or StrategyKind.NullMaterial
-                         or StrategyKind.NullGraph or StrategyKind.NullEffectPack && record.Size == 0)
+                else if (strategy is StrategyKind.StripAttachments or StrategyKind.Auto or StrategyKind.Keep)
                 {
-                    // Preview paths (pscli plan, apply without --yes, the GUI's material dialog) build
-                    // a plan against the *live* index, which is already blanked after an apply. Without
-                    // this they would report re-writing 0 bytes over 0 bytes as a change — inflating
-                    // the counts the confirmation dialog shows, and turning `plan`'s "nothing to do"
-                    // exit code into a lie. During Apply itself the files are back to their original
-                    // size (the baseline rollback runs first), so real writes are never filtered out.
-                    plan.Unchanged.Add(rule.Path);
-                    continue;
+                    var original = record.Read().ToArray();
+                    var replacement = ReplacementFactory.Create(original, rule.Path, rule.Strategy,
+                        request.BlankStyle);
+                    if (replacement.AsSpan().SequenceEqual(original))
+                    {
+                        plan.Unchanged.Add(rule.Path);
+                        continue;
+                    }
                 }
 
                 plan.Changes.Add(new PlannedChange(
@@ -896,6 +958,7 @@ public sealed class AppService
             }
         }
 
+        CompressionPlanner.AddChanges(plan, session, request, seen);
         return plan;
     }
 }

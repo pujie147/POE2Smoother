@@ -13,13 +13,20 @@ public enum StrategyKind
     NullPet,
     NullMaterial,
     NullGraph,
-    NullEffectPack
+    NullEffectPack,
+
+    // Rendering-side compression (opt-in via CompressionOptions, never the Auto default):
+    // keeps the visual role, lowers render cost. See docs/experimental-risk-tiers.md §5.
+    CompressDds,
+    SimplifyGraph,
+    SwapMeshLod,
+    DecimateMesh
 }
 
 /// <summary>
 /// How much the tool is willing to touch for one rule. The old single "experimental" tick
 /// bundled every blanking strategy together, including <see cref="StrategyKind.NullMaterial"/>,
-/// which zeroes the materials ordinary rendering shares. Splitting them lets a user take the
+/// blanks the materials ordinary rendering shares. Splitting them lets a user take the
 /// effect-only win without that, and lets a partial restore undo one without the other.
 /// </summary>
 public enum RiskTier
@@ -27,7 +34,7 @@ public enum RiskTier
     /// <summary>Script surgery on `.ao`, or a valid 1x1 transparent stub for `.dds`. Always applied.</summary>
     Safe,
 
-    /// <summary>Blank an effect resource (`.pet`/`.epk`/`.fxgraph`/`.aoc`) to zero bytes.</summary>
+    /// <summary>Blank an effect resource (`.pet`/`.epk`/`.fxgraph`/`.aoc`); see <see cref="BlankTemplates"/>.</summary>
     Fx,
 
     /// <summary>Blank a material (`.mat`). Referenced by rendering outside the effect pack, so it is gated hardest.</summary>
@@ -50,9 +57,12 @@ public static class RiskTiers
 
         return resolved switch
         {
-            StrategyKind.NullMaterial => RiskTier.Material,
+            // Textures are shared with ordinary rendering everywhere, so recompressing them is
+            // gated as hard as blanking materials. Mesh/shader compression stays in the fx tier.
+            StrategyKind.NullMaterial or StrategyKind.CompressDds => RiskTier.Material,
             StrategyKind.NullPet or StrategyKind.NullEffectPack or StrategyKind.NullGraph
-                or StrategyKind.Empty => RiskTier.Fx,
+                or StrategyKind.Empty or StrategyKind.SimplifyGraph or StrategyKind.SwapMeshLod
+                or StrategyKind.DecimateMesh => RiskTier.Fx,
             _ => RiskTier.Safe
         };
     }

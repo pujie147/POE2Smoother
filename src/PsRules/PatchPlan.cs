@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace PsRules;
 
 public sealed record PlannedChange(
@@ -6,7 +8,10 @@ public sealed record PlannedChange(
     long Size,
     string CategoryId,
     RiskTier Tier,
-    bool Experimental);
+    bool Experimental,
+    // Compression transforms are computed once at plan time (they may need cross-file data,
+    // e.g. a LOD sibling) and applied verbatim. Never serialized: plan JSON stays byte-stable.
+    [property: JsonIgnore] byte[]? Replacement = null);
 
 public sealed class PatchPlan
 {
@@ -34,6 +39,13 @@ public sealed class PatchPlan
     public long TotalBytes => Changes.Sum(c => c.Size);
 
     public int MaterialFiles => Changes.Count(c => c.Tier == RiskTier.Material);
+
+    public int CompressionFiles => Changes.Count(c => CompressionOptions.IsCompressionStrategy(c.Strategy));
+
+    /// <summary>Compress-first candidates that fell back to blanking: CategoryId "compression" but a
+    /// blanking strategy. Reported separately so the confirmation dialog can distinguish them.</summary>
+    public int CompressionFallbackFiles => Changes.Count(c =>
+        c.CategoryId == "compression" && !CompressionOptions.IsCompressionStrategy(c.Strategy));
 
     public long MaterialBytes => Changes.Where(c => c.Tier == RiskTier.Material).Sum(c => c.Size);
 }

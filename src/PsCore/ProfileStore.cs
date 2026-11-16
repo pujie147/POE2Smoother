@@ -16,6 +16,32 @@ public sealed class Profile
     /// <summary>"safe" | "fx" | "material", stored as a string for the same reason as in AppSettings.</summary>
     public string? ExperimentalTier { get; set; }
 
+    /// <summary>"template" | "empty" — a profile also carries the blanking style it was saved with.
+    /// The property shadows the enum's name inside this class, hence the qualified returns.</summary>
+    public string? BlankStyle { get; set; }
+
+    public PsRules.BlankStyle EffectiveBlankStyle() => PsRules.BlankStyles.FromKey(BlankStyle);
+
+    /// <summary>Write strategy saved with the profile; see <see cref="AppSettings.WriteStrategy"/>.
+    /// The property shadows the enum's name inside this class, hence the qualified returns.</summary>
+    public string? WriteStrategy { get; set; }
+
+    public PsRules.WriteStrategy EffectiveWriteStrategy() =>
+        PsRules.WriteStrategies.TryParse(WriteStrategy, out var strategy)
+            ? strategy
+            : PsRules.WriteStrategies.FromKey(BlankStyle);
+
+    public void SetWriteStrategy(PsRules.WriteStrategy strategy)
+    {
+        WriteStrategy = PsRules.WriteStrategies.ToKey(strategy);
+        BlankStyle = PsRules.BlankStyles.ToKey(PsRules.WriteStrategies.ToBlankStyle(strategy));
+    }
+
+    /// <summary>Compression toggles saved with the profile; null (older profiles) means all off.</summary>
+    public CompressionOptions? Compression { get; set; }
+
+    public CompressionOptions EffectiveCompression() => Compression ?? new CompressionOptions();
+
     /// <summary>A profile saved before tiers existed meant "all blanking strategies", so it migrates to material.</summary>
     public RiskTier EffectiveTier() =>
         RiskTiers.TryParse(ExperimentalTier, out var tier)

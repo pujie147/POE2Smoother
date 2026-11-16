@@ -83,6 +83,9 @@ $expPack = Join-Path $exp "pack.json"
 $expPath = "metadata/effects/spells/fire/burn.pet"
 $expContent = "PARTICLE-DATA-DO-NOT-TOUCH"
 $expected = $expContent.Length
+# A blanked .pet is our minimal valid empty particle file (UTF-16LE BOM + "0"), not 0 bytes.
+# Pinned: a stub-size change must break this gate loudly rather than be satisfied by "not zero".
+$petTemplate = 4
 
 function Exp-Size {
     $read = (dotnet $Cli read-file --index $expIndex --path $expPath) -join "`n"
@@ -109,7 +112,7 @@ $apply = (dotnet $Cli apply --index $expIndex --pack $expPack --preset safe --in
 if ($apply -notmatch "files      : 1" -or $apply -notmatch "skippedExp : 0") { throw "--include-experimental must blank the rule`n$apply" }
 $status = (dotnet $Cli status --index $expIndex) -join "`n"
 if ($status -notmatch "modified      : True") { throw "ticked apply must report modified`n$status" }
-if ((Exp-Size) -ne 0) { throw "--include-experimental did not blank $expPath" }
+if ((Exp-Size) -ne $petTemplate) { throw "--include-experimental did not write the .pet template ($(Exp-Size) bytes)" }
 
 $restore = (dotnet $Cli restore --index $expIndex --yes) -join "`n"
 if ($restore -notmatch "index restored") { throw "restore failed`n$restore" }
@@ -138,11 +141,11 @@ dotnet $Cli build-rules --index $tiersIndex --out $tiersPack --name "Tier Test" 
 if ($LASTEXITCODE -ne 0) { throw "tier build-rules failed" }
 
 dotnet $Cli apply --index $tiersIndex --pack $tiersPack --preset safe --experimental off --yes | Out-Null
-if ((Tier-Size) -eq 0) { throw "--experimental off blanked $tiersPet" }
+if ((Tier-Size) -eq $petTemplate) { throw "--experimental off blanked $tiersPet" }
 
 $apply = (dotnet $Cli apply --index $tiersIndex --pack $tiersPack --preset safe --experimental fx --yes) -join "`n"
 if ($apply -notmatch "files      : 1") { throw "--experimental fx should blank the particle rule`n$apply" }
-if ((Tier-Size) -ne 0) { throw "--experimental fx did not blank $tiersPet" }
+if ((Tier-Size) -ne $petTemplate) { throw "--experimental fx did not write the template ($(Tier-Size) bytes)" }
 
 dotnet $Cli plan --index $tiersIndex --pack $tiersPack --experimental everything | Out-Null
 if ($LASTEXITCODE -eq 0) { throw "--experimental accepted a bogus tier" }
@@ -150,7 +153,7 @@ if ($LASTEXITCODE -eq 0) { throw "--experimental accepted a bogus tier" }
 dotnet $Cli restore --index $tiersIndex --yes | Out-Null
 $apply = (dotnet $Cli apply --index $tiersIndex --pack $tiersPack --preset safe --include-experimental --yes) -join "`n"
 if ($apply -notmatch "files      : 1") { throw "--include-experimental stopped meaning material`n$apply" }
-if ((Tier-Size) -ne 0) { throw "--include-experimental did not blank $tiersPet" }
+if ((Tier-Size) -ne $petTemplate) { throw "--include-experimental did not write the template" }
 dotnet $Cli restore --index $tiersIndex --yes | Out-Null
 
 # Scoped restore: --undo-tiers material leaves the single fx entry suppressed (kept=1, still blank);
@@ -158,16 +161,71 @@ dotnet $Cli restore --index $tiersIndex --yes | Out-Null
 dotnet $Cli apply --index $tiersIndex --pack $tiersPack --preset safe --experimental fx --yes | Out-Null
 $undo = (dotnet $Cli restore --index $tiersIndex --undo-tiers material --yes) -join "`n"
 if ($undo -notmatch "kept=1") { throw "--undo-tiers material should keep the fx suppression`n$undo" }
-if ((Tier-Size) -ne 0) { throw "--undo-tiers material undid the fx blanking" }
+if ((Tier-Size) -ne $petTemplate) { throw "--undo-tiers material undid the fx blanking" }
 
 $undo = (dotnet $Cli restore --index $tiersIndex --undo-tiers fx --yes) -join "`n"
-if ((Tier-Size) -eq 0) { throw "--undo-tiers fx did not give $tiersPet back`n$undo" }
+if ((Tier-Size) -eq $petTemplate) { throw "--undo-tiers fx did not give $tiersPet back`n$undo" }
 if (Test-Path (Join-Path $env:POE2SMOOTHER_HOME "state.json")) { throw "a restore that undoes every entry must clear the state file" }
 
+# The 0-byte fallback has to still do what it says, on the same fixture.
+dotnet $Cli apply --index $tiersIndex --pack $tiersPack --preset safe --experimental fx --blank-style empty --yes | Out-Null
+if ((Tier-Size) -ne 0) { throw "--blank-style empty did not write a 0-byte file ($(Tier-Size) bytes)" }
+# Assert the reason, not just the exit code: with no applied state everything below also fails.
+$blankErr = (dotnet $Cli plan --index $tiersIndex --pack $tiersPack --experimental fx --blank-style sideways 2>&1) -join "`n"
+if ($LASTEXITCODE -eq 0) { throw "--blank-style accepted a bogus value" }
+if ($blankErr -notmatch "unknown --blank-style") { throw "--blank-style refused for the wrong reason`n$blankErr" }
+dotnet $Cli restore --index $tiersIndex --yes | Out-Null
+
+# Write strategies on the same fixture. The .pet is not a compression candidate, so it shows the
+# blanking-off vs blanking-on split: compress-only never blanks it, compress-then-* still do.
+$petOrig = Tier-Size
+dotnet $Cli apply --index $tiersIndex --pack $tiersPack --preset safe --experimental fx --blank-style compress-only --yes | Out-Null
+if ((Tier-Size) -ne $petOrig) { throw "--blank-style compress-only blanked a non-candidate .pet ($(Tier-Size) bytes)" }
+# No restore here: compress-only wrote 0 files, so there is no applied state to undo (restore
+# would throw "No backup path is known", exactly like the --experimental off case above).
+
+dotnet $Cli apply --index $tiersIndex --pack $tiersPack --preset safe --experimental fx --blank-style compress-then-template --yes | Out-Null
+if ((Tier-Size) -ne $petTemplate) { throw "--blank-style compress-then-template did not blank the .pet to a template" }
+dotnet $Cli restore --index $tiersIndex --yes | Out-Null
+
+dotnet $Cli apply --index $tiersIndex --pack $tiersPack --preset safe --experimental fx --blank-style compress-then-empty --yes | Out-Null
+if ((Tier-Size) -ne 0) { throw "--blank-style compress-then-empty did not write a 0-byte .pet" }
+dotnet $Cli restore --index $tiersIndex --yes | Out-Null
+
+# Class flags without an explicit strategy auto-promote to compress-then-template (old-script compat)
+# and say so; the .pet still blanks because it is not a compression candidate.
+$promo = (dotnet $Cli apply --index $tiersIndex --pack $tiersPack --preset safe --experimental fx --compress-shader --yes 2>&1) -join "`n"
+if ((Tier-Size) -ne $petTemplate) { throw "compression class flags without --blank-style should promote to compress-then-template and blank the .pet" }
+if ($promo -notmatch "compress-then-template") { throw "promotion should note the chosen strategy`n$promo" }
+dotnet $Cli restore --index $tiersIndex --yes | Out-Null
+
+# health: the client log is the only party that knows whether a blanked asset actually loaded.
+dotnet $Cli apply --index $tiersIndex --pack $tiersPack --preset safe --experimental fx --yes | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $tiers "logs") | Out-Null
+$log = @(
+  '2026-01-01 00:00:00 000000 abcdef [WARN Client 1] Failed to create effect graph node "X" in graph "Metadata/Effects/Spells/Fire/Spark.PET"',
+  '2026-01-01 00:00:01 000000 abcdef [WARN Client 1] Some unrelated warning about "Metadata/Art/Other/Untouched.mat"'
+)
+Set-Content -Path (Join-Path $tiers "logs/LatestClient.txt") -Value $log
+$health = (dotnet $Cli health --index $tiersIndex) -join "`n"
+$healthCode = $LASTEXITCODE
+if ($healthCode -ne 7) { throw "health should flag the planted complaint (exit $healthCode)`n$health" }
+if ($health -notmatch "suspect    : 1") { throw "health should find exactly one suspect`n$health" }
+if ($health -notmatch "spark\.pet") { throw "health should name the blanked file`n$health" }
+if ($health -match "Untouched\.mat") { throw "health must not blame files this tool never wrote`n$health" }
+Remove-Item -Recurse -Force (Join-Path $tiers "logs")
+dotnet $Cli restore --index $tiersIndex --yes | Out-Null
+
+# Re-apply first: with no state the command would fail anyway and the test would pass for the
+# wrong reason.
+dotnet $Cli apply --index $tiersIndex --pack $tiersPack --preset safe --experimental fx --yes | Out-Null
 dotnet $Cli restore --index $tiersIndex --undo-tiers fx --force --yes | Out-Null
 if ($LASTEXITCODE -eq 0) { throw "--undo-tiers accepted --force" }
-dotnet $Cli restore --index $tiersIndex --undo-tiers everything --yes | Out-Null
-if ($LASTEXITCODE -eq 0) { throw "--undo-tiers accepted a bogus tier" }
+$forceErr = (dotnet $Cli restore --index $tiersIndex --undo-tiers fx --force --yes 2>&1) -join "`n"
+if ($forceErr -notmatch "drop --force") { throw "--undo-tiers + --force refused for the wrong reason`n$forceErr" }
+$tierErr = (dotnet $Cli restore --index $tiersIndex --undo-tiers everything --yes 2>&1) -join "`n"
+if ($tierErr -notmatch "unknown --undo-tiers") { throw "--undo-tiers refused for the wrong reason`n$tierErr" }
+dotnet $Cli restore --index $tiersIndex --yes | Out-Null
 
 Write-Host ""
 Write-Host "ALL TESTS PASSED"
