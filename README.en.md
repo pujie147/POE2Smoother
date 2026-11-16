@@ -19,8 +19,8 @@ and gives the framerate and the thermals back to what actually matters — the g
 ## Download
 
 Prebuilt AppImages and portable Windows ZIPs are attached to the
-[Releases](https://github.com/pujie147/mySmoother2/releases) page; the
-[latest release](https://github.com/pujie147/mySmoother2/releases/latest) always points at the newest
+[Releases](https://github.com/pujie147/POE2Smoother/releases) page; the
+[latest release](https://github.com/pujie147/POE2Smoother/releases/latest) always points at the newest
 stable tag. Every release is built automatically by GitHub Actions from a `v*` tag
 (`.github/workflows/release.yml`: run the `scripts/test-all.sh` gate → publish GUI/CLI → pack the AppImage
 and the Windows ZIPs → attach everything to the release). The assets are always named
@@ -28,12 +28,12 @@ and the Windows ZIPs → attach everything to the release). The assets are alway
 links stay valid across versions:
 
 ```bash
-curl -LO https://github.com/pujie147/mySmoother2/releases/latest/download/PoE2Smoother-x86_64.AppImage
+curl -LO https://github.com/pujie147/POE2Smoother/releases/latest/download/PoE2Smoother-x86_64.AppImage
 ```
 
 ```powershell
 # Windows: unzip, then start poe2smoother.exe
-curl.exe -LO https://github.com/pujie147/mySmoother2/releases/latest/download/PoE2Smoother-win-x64.zip
+curl.exe -LO https://github.com/pujie147/POE2Smoother/releases/latest/download/PoE2Smoother-win-x64.zip
 Expand-Archive .\PoE2Smoother-win-x64.zip .
 .\PoE2Smoother\poe2smoother.exe
 ```

@@ -49,4 +49,5 @@ vendor/appimage/*
 # IDE
 .vs/
 .vscode/
+.qoder/
 *.user

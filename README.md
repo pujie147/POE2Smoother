@@ -18,19 +18,19 @@
 
 ## 下载 / Download
 
-预编译好的 AppImage 与 Windows 便携 ZIP 挂在 [Releases](https://github.com/pujie147/mySmoother2/releases) 页上，
-[最新发布版](https://github.com/pujie147/mySmoother2/releases/latest) 永远指向正式版的最新 tag。
+预编译好的 AppImage 与 Windows 便携 ZIP 挂在 [Releases](https://github.com/pujie147/POE2Smoother/releases) 页上，
+[最新发布版](https://github.com/pujie147/POE2Smoother/releases/latest) 永远指向正式版的最新 tag。
 每次发布由 GitHub Actions 从 `v*` tag 自动构建（`.github/workflows/release.yml`：跑 `scripts/test-all.sh`
 门禁 → 发布 GUI/CLI → 打包 AppImage 与 Windows ZIP → 挂上 Release），产物固定叫
 **`PoE2Smoother-x86_64.AppImage`**、**`PoE2Smoother-win-x64.zip`**、**`pscli-win-x64.zip`**，所以下面这些链接长期有效：
 
 ```bash
-curl -LO https://github.com/pujie147/mySmoother2/releases/latest/download/PoE2Smoother-x86_64.AppImage
+curl -LO https://github.com/pujie147/POE2Smoother/releases/latest/download/PoE2Smoother-x86_64.AppImage
 ```
 
 ```powershell
 # Windows：解压后用 poe2smoother.exe 启动
-curl.exe -LO https://github.com/pujie147/mySmoother2/releases/latest/download/PoE2Smoother-win-x64.zip
+curl.exe -LO https://github.com/pujie147/POE2Smoother/releases/latest/download/PoE2Smoother-win-x64.zip
 Expand-Archive .\PoE2Smoother-win-x64.zip .
 .\PoE2Smoother\poe2smoother.exe
 ```

@@ -165,7 +165,10 @@ jobs:
           {
             printf '## 下载 / Download\n\n'
             printf 'AppImage(固定文件名,可直接 curl):\n\n'
-            printf '```bash\ncurl -LO https://github.com/pujie147/mySmoother2/releases/latest/download/PoE2Smoother-x86_64.AppImage\nchmod +x PoE2Smoother-x86_64.AppImage\n./PoE2Smoother-x86_64.AppImage\n```\n\n'
+            # server_url/repository instead of a literal owner/name: the repo has already been
+            # renamed once, and a hardcoded URL silently keeps working via the redirect while
+            # printing the wrong address into every future release body.
+            printf '```bash\ncurl -LO ${{ github.server_url }}/${{ github.repository }}/releases/latest/download/PoE2Smoother-x86_64.AppImage\nchmod +x PoE2Smoother-x86_64.AppImage\n./PoE2Smoother-x86_64.AppImage\n```\n\n'
             printf 'SteamOS 缺少 FUSE2 时用解包模式运行 / if FUSE2 is missing, run extracted:\n\n'
             printf '```bash\nAPPIMAGE_EXTRACT_AND_RUN=1 ./PoE2Smoother-x86_64.AppImage\n```\n\n'
             printf 'SHA-256: `%s`\n\n' '${{ steps.sum.outputs.sha256 }}'
