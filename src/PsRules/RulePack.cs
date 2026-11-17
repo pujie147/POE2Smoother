@@ -176,7 +176,9 @@ public sealed class RuleCategory
         if (!IsEnglish(language) && !EffectLabels.ContainsHan(resolved))
             return EffectLabels.WithFrame(Id, resolved);
 
-        return resolved;
+        // Already Chinese, but possibly an old pack's 简体 frame ("环境: Aow") — the rest of the
+        // column is 繁體, so a stale frame gets rewritten rather than sitting there in two scripts.
+        return IsEnglish(language) ? resolved : EffectLabels.Reframe(resolved);
     }
 
     private string ResolveLabel(string language)

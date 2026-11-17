@@ -51,3 +51,6 @@ vendor/appimage/*
 .vscode/
 .qoder/
 *.user
+
+# 开发脚本的字节码缓存(mine-zh-names.py 等)
+__pycache__/

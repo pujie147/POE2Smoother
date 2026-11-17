@@ -10,11 +10,11 @@ and gives the framerate and the thermals back to what actually matters — the g
 
 - Locates PoE2 automatically: multiple Steam libraries, SD-card installs, the Windows registry and conventional install folders — both the **Steam** version and the **standalone client's `Content.ggpk`** (experimental)
 - Effects are grouped by category — **skills / appearance / monsters / leagues (Abyss, Delirium, Splinter… 9 groups) / environment / other** — each row labelled in both Chinese and English, searchable by name (either language), ID or path, whole groups toggle in one click
-  - Chinese names come from **your own client's official name tables** (ActiveSkills etc., copied verbatim — see [`docs/zh-labels.md`](docs/zh-labels.md)). This machine's client only has the Traditional overlay, so the column currently mixes Traditional (official) and Simplified (hand-written); downloading the Simplified Chinese language for PoE2 in Steam and re-running the extraction unifies it. Skills with no table entry show as 「技能: original name」 — a row is never English-only
+  - Chinese names come from **your own client's official name tables** (ActiveSkills / WorldAreas etc., copied verbatim — see [`docs/zh-labels.md`](docs/zh-labels.md)). The client only ships the Traditional overlay, so **this column is Traditional Chinese** while the rest of the UI stays Simplified; downloading the Simplified Chinese language for PoE2 in Steam and re-running the extraction swaps it to official Simplified. Folders with no table row (variants, mechanics, mounts) are translated by us against the client's own term list ([`docs/zh-terms.md`](docs/zh-terms.md)); only opaque area codes still show `環境: original name`
 - Four presets **Safe / Clean / Performance / Full**, plus free category combinations, an editable ignore list, and saved profiles
 - Apply, status check, game-update detection, one-click restore; the original index is backed up before every apply
 - **Render compression (experimental, off by default)**: another path that keeps visuals but lowers render load — same-resolution BC7→BC1 textures, official mesh LOD swap, shader simplification, mesh decimation (strength slider), plus an aggressive downscale option; mutually exclusive with blanking, touches only `.dds`/`.fxgraph`/`.fmt`, never `.pet` configs
-- Bilingual UI (中文 / English), large text, gamepad/keyboard operable, tuned for the Steam Deck / Ally 1280×800
+- Bilingual UI (中文 / English), large text, gamepad/keyboard operable, tuned for the Steam Deck / Ally 1280×800 — the effects category names use the client's own Traditional Chinese official names (see [`docs/zh-labels.md`](docs/zh-labels.md))
 - Touches local client files only: no memory injection, no reading or writing the game process
 
 ## Download

@@ -6,8 +6,11 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Embedded so the label table travels in the DLL: AppImage/portable packaging stays untouched. -->
+    <!-- Embedded so the label tables travel in the DLL: AppImage/portable packaging stays untouched.
+         Two files because provenance differs: labels-zh.json is copied verbatim from the client's own
+         name tables, labels-zh-named.json is our translation of what those tables do not cover. -->
     <EmbeddedResource Include="Labels/labels-zh.json" />
+    <EmbeddedResource Include="Labels/labels-zh-named.json" />
   </ItemGroup>
 
   <ItemGroup>

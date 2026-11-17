@@ -1,30 +1,50 @@
-using System.Reflection;
 using System.Text.Json;
 
 namespace PsRules;
 
 /// <summary>
-/// Shipped 简体中文 display names for effect categories, keyed by the category id that
+/// Shipped Chinese display names for effect categories, keyed by the category id that
 /// <see cref="RulePackBuilder.Classify"/> produces.
 ///
 /// Resolved at *display* time and deliberately not written into the pack JSON: rebuilding a pack
 /// means re-scanning the whole GGPK, so baking labels in would make every wording fix cost the
 /// player a rebuild. The trade-off is that the pack on disk and the screen can disagree about zh —
 /// the screen is what the user reads, and <c>en</c> stays authoritative for old packs.
+///
+/// Two tables, because provenance matters: <see cref="OfficialAll"/> is copied verbatim out of the
+/// client's own name tables (currently 繁體), <see cref="NamedAll"/> is our translation of folders
+/// those tables have no row for. Merging them into one file with a "source" field would let the two
+/// drift apart silently, and an invented label presented as official is the mistake this splits to
+/// prevent (see docs/zh-labels.md).
 /// </summary>
 public static class EffectLabels
 {
-    /// <summary>Manifest resource name; matches <c>Labels/labels-zh.json</c> plus the default root namespace.</summary>
-    private const string ResourceName = "PsRules.Labels.labels-zh.json";
+    /// <summary>Manifest resource names, in precedence order: official first, ours second.</summary>
+    private const string OfficialResource = "PsRules.Labels.labels-zh.json";
+    private const string NamedResource = "PsRules.Labels.labels-zh-named.json";
 
-    private static readonly Lazy<Dictionary<string, string>> Table = new(Load);
+    private static readonly Lazy<Tables> Loaded = new(Build);
+
+    private sealed record Tables(
+        Dictionary<string, string> Official,
+        Dictionary<string, string> Named,
+        Dictionary<string, string> Merged);
+
+    /// <summary>Names copied verbatim from the client's tables.</summary>
+    public static IReadOnlyDictionary<string, string> OfficialAll => Loaded.Value.Official;
+
+    /// <summary>Names we translated because the client has no row for that folder.</summary>
+    public static IReadOnlyDictionary<string, string> NamedAll => Loaded.Value.Named;
 
     /// <summary>Number of ids with a shipped Chinese name. Used for the coverage line in <c>pscli list-rules</c>.</summary>
-    public static int Count => Table.Value.Count;
+    public static int Count => Loaded.Value.Merged.Count;
+
+    /// <summary>Every shipped id → name, official winning. Used by diagnostics and the table's tests.</summary>
+    public static IReadOnlyDictionary<string, string> All => Loaded.Value.Merged;
 
     public static bool TryGet(string id, out string zh)
     {
-        if (!string.IsNullOrWhiteSpace(id) && Table.Value.TryGetValue(id, out var value))
+        if (!string.IsNullOrWhiteSpace(id) && Loaded.Value.Merged.TryGetValue(id, out var value))
         {
             zh = value;
             return true;
@@ -36,34 +56,71 @@ public static class EffectLabels
 
     public static bool Has(string id) => TryGet(id, out _);
 
-    /// <summary>Every shipped id → name. Read-only view, used by diagnostics and the table's own tests.</summary>
-    public static IReadOnlyDictionary<string, string> All => Table.Value;
+    /// <summary>True when the shipped name for this id is a verbatim copy from the client.</summary>
+    public static bool IsOfficial(string id) =>
+        !string.IsNullOrWhiteSpace(id) && Loaded.Value.Official.ContainsKey(id);
 
     /// <summary>
     /// Chinese frame per id namespace, worded exactly like <see cref="RulePackBuilder.Classify"/> so a
     /// rebuilt pack and an old one on disk read the same. Only namespaces the builder emits are listed:
     /// <c>monsters</c>/<c>misc</c> carry no dot and already have real Chinese names.
     /// </summary>
+    /// <remarks>繁體, like both tables — a 简体 frame next to a 繁體 name would look like two bugs.</remarks>
     private static readonly Dictionary<string, string> Frames = new(StringComparer.OrdinalIgnoreCase)
     {
         ["skill"] = "技能",
-        ["env"] = "环境",
+        ["env"] = "環境",
         ["terrain"] = "地形",
-        ["mtx"] = "外观",
-        ["league"] = "联赛"
+        ["mtx"] = "外觀",
+        ["league"] = "聯賽"
     };
 
+    /// <summary>Frame words, exposed so the parity test can compare them against <c>Classify</c>.</summary>
+    public static IReadOnlyDictionary<string, string> FrameWords => Frames;
+
     /// <summary>
-    /// English frames <see cref="RulePackBuilder"/> puts in the <c>en</c> label. Stripped before a
-    /// Chinese frame is added, otherwise an old pack would read "环境: Environment material: Desert".
+    /// Frames the builder wrote before this round, when the Chinese column was still 简体. An old
+    /// pack stores them in its own JSON, so a category we have no shipped name for would otherwise
+    /// render "环境: Aow" — Simplified frame next to a column of Traditional names.
+    /// </summary>
+    private static readonly (string Old, string New)[] LegacyFrames =
+    [
+        ("环境材质: ", "環境材質: "),
+        ("环境: ", "環境: "),
+        ("外观特效: ", "外觀特效: "),
+        ("地形: ", "地形: "),
+        ("技能: ", "技能: "),
+        ("联赛: ", "聯賽: ")
+    ];
+
+    /// <summary>Rewrite a stale 简体 frame to the 繁體 one the rest of the column uses.</summary>
+    public static string Reframe(string text)
+    {
+        foreach (var (old, replacement) in LegacyFrames)
+        {
+            if (text.StartsWith(old, StringComparison.Ordinal))
+                return replacement + text[old.Length..];
+        }
+
+        return text;
+    }
+
+    /// <summary>
+    /// English frames <see cref="RulePackBuilder"/> puts in the <c>en</c> label, and their Chinese
+    /// equivalents. Stripped before a frame is added, otherwise an old pack would read
+    /// "环境: Environment material: Desert".
     /// </summary>
     private static readonly string[] EnglishFrames =
     [
         "Environment material: ", "Environment: ", "Terrain: ", "MTX: ", "Monster skills", "Misc effects"
     ];
 
+    /// <summary>
+    /// Han ideographs only — CJK punctuation, 「·」 and full-width brackets do not count, otherwise a
+    /// label like "多重 UV 素材" would look Chinese while still being untranslatable to a player.
+    /// </summary>
     public static bool ContainsHan(string? text) =>
-        text != null && text.Any(c => c >= 0x4E00 && c <= 0x9FFF);
+        text != null && text.Any(c => c is >= '㐀' and <= '䶿' or >= '一' and <= '鿿' or >= '豈' and <= '﫿');
 
     /// <summary>
     /// "<c>技能: Arc</c>" for a name that arrived in Latin letters from an old pack, or the text
@@ -94,15 +151,28 @@ public static class EffectLabels
 
     /// <summary>
     /// A missing or malformed table must degrade to "no Chinese names", never to a tool that cannot
-    /// list categories — the label table is polish, category access is the product.
+    /// list categories — the label table is polish, category access is the product. The two files are
+    /// independent: if one fails to parse, the other still contributes.
     /// </summary>
-    private static Dictionary<string, string> Load()
+    private static Tables Build()
+    {
+        var official = LoadFile(OfficialResource);
+        var named = LoadFile(NamedResource);
+        var merged = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (id, zh) in official)
+            merged[id] = zh;
+        foreach (var (id, zh) in named)
+            merged.TryAdd(id, zh);
+
+        return new Tables(official, named, merged);
+    }
+
+    private static Dictionary<string, string> LoadFile(string resourceName)
     {
         var labels = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         try
         {
-            var assembly = typeof(EffectLabels).Assembly;
-            using var stream = assembly.GetManifestResourceStream(ResourceName);
+            using var stream = typeof(EffectLabels).Assembly.GetManifestResourceStream(resourceName);
             if (stream == null)
                 return labels;
 

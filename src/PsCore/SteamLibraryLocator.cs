@@ -71,9 +71,9 @@ public static class SteamLibraryLocator
     {
         var fullIndex = Path.GetFullPath(indexPath);
         var bundlesDir = Path.GetDirectoryName(fullIndex)
-                         ?? throw new InvalidOperationException($"Cannot get Bundles2 directory from {indexPath}");
+                         ?? throw new InvalidOperationException($"无法从 {indexPath} 取得 Bundles2 目录 / cannot get the Bundles2 directory from {indexPath}");
         var gameRoot = Path.GetDirectoryName(bundlesDir)
-                       ?? throw new InvalidOperationException($"Cannot get game root from {indexPath}");
+                       ?? throw new InvalidOperationException($"无法从 {indexPath} 定位游戏根目录 / cannot get game root from {indexPath}");
         return new GameLocation(gameRoot, bundlesDir, fullIndex, null);
     }
 

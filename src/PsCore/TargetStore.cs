@@ -74,7 +74,7 @@ internal sealed class GgpkTargetStore : TargetStore
     public GgpkTargetStore(GameLocation game) : base(game)
     {
         _ggpkPath = game.GgpkPath
-                    ?? throw new ArgumentException("GameLocation has no Content.ggpk path", nameof(game));
+                    ?? throw new ArgumentException("GameLocation 缺少 Content.ggpk 路径 / GameLocation has no Content.ggpk path", nameof(game));
     }
 
     private string JournalPath => _ggpkPath + ".psjournal";
@@ -104,7 +104,7 @@ internal sealed class GgpkTargetStore : TargetStore
     public override void RestoreBackup(string backupPath)
     {
         if (!File.Exists(backupPath))
-            throw new FileNotFoundException("Backup not found", backupPath);
+            throw new FileNotFoundException("找不到备份文件 / backup not found", backupPath);
 
         var bytes = File.ReadAllBytes(backupPath);
         WriteIndexBytes(bytes);
@@ -242,7 +242,7 @@ internal sealed class GgpkTargetStore : TargetStore
     {
         var bundles2 = Bundles2(ggpk);
         return bundles2?[IndexEntryName] as GgpkFileRecord
-               ?? throw new InvalidDataException($"Bundles2/{IndexEntryName} not found in the GGPK");
+               ?? throw new InvalidDataException($"GGPK 内找不到 Bundles2/{IndexEntryName} / Bundles2/{IndexEntryName} not found in the GGPK");
     }
 
     private static DirectoryRecord? Bundles2(GGPK ggpk) => ggpk.Root["Bundles2"] as DirectoryRecord;

@@ -1,83 +1,76 @@
-# 特效类别中文名的来源与重挖步骤
+# 特效类别中文名的来源、字形与重挖步骤
 
-`src/PsRules/Labels/labels-zh.json` 是特效勾选行的中文名来源(类别 Id → 显示名,嵌入 `PsRules.dll`)。
-它有两种来源,**来源不同,写法就不同,这点是刻意的**:
+特效页每一行勾选的名字来自两张随包词表(嵌在 `PsRules.dll` 里),**分文件是因为来源可信度不同**:
 
-| 来源 | 写法 | 说明 |
-|---|---|---|
-| 客户端自带名字表挖出来的 | **官方繁體原文** | 逐字照抄,不做繁简转换 |
-| 手写的(客户端没有对应行时) | 简体 | 与界面其余部分一致 |
+| 文件 | 条数 | 来源 | 字形 |
+|---|---:|---|---|
+| `src/PsRules/Labels/labels-zh.json` | **270** | 客户端自带名字表里挖出的**官方名**,逐字照抄 | 繁體(客户端只有 zh-TW 覆盖表) |
+| `src/PsRules/Labels/labels-zh-named.json` | **720** | 官方表里没有对应行时,**我们起的名字** | 繁體(刻意与上一行同字形) |
+| 显示期框架 | 2 | `環境: 原名` —— 含义不明的编号,不硬凑 | 繁體 |
 
-所以同一列目前繁体/简体并存。为什么不把官方繁體转成简体:转换后的字符串会被当成官方名,而官方简体译法
-并不总是逐字对应(术语层面会有差别)。**宁可让玩家看到真的官方名,也不看到我们猜的简体名。**
-装上官方简体中文语言包后重跑一遍下面的流程,整列可换成官方简体名,混排随即消失。
+解析顺序:官方表 → 我们的表 → 框架兜底(`RulePack.LabelFor`)。**都在显示期解析,不写回规则包** ——
+重新生成规则包要重扫整个 GGPK,不该为一个措辞让玩家付这个钱。
 
-## 客户端里到底有什么
+当前状态(2026-11-17,用户本机规则包 992 类):无汉字行 **0**;仍是"框架 + 英文原名"的 **2 行**
+(`env.aow`、`env.map_uniquereactor_02`);整列里没有简体字形。
 
-- 名字表在 `data/balance/`,共 3,588 个文件,绝大多数是 `.datc64`;语言覆盖表在
-  `data/balance/<语言>/`,本机装了 `french`、`german`、`japanese`、`korean`、`portuguese`、
-  `russian`、`spanish`、`thai`、`traditional chinese`(219 张表,66.7 MB)。**没有 `simplified chinese`**
-  ——`data/balance/languages.dat` 里注册了 `Simplified Chinese (zh-CN)`,但要靠 Steam 的语言下载才落地。
-- **`.datc64` 不是压缩的**。它是列式容器 + **UTF-16LE** 字符串池;用普通 `strings` 去看会以为它是二进制,
-  必须 `strings -el`。这一条曾经把我带偏,别第二次踩。
-- 表内一行的字符串在池中**按列顺序连续排列**:`Id, Name, Description, Icon, …`。
-  Name 为空的行,其后紧跟的就是 Description(靠长度/句号/大小写形状区分)。
-- **覆盖表与基础表的行序一致**,且 `Id` 列保持 ASCII 原文 —— 所以按 Id 文本对齐即可拿到本地化名,不需要 schema。
-  (`vendor/libggpk3/LibDat2.dll` 是这类表的正式读法,但它要 `schema.min.json` 才能给列命名;
-  只为取名字而不必引入它。)
+## 为什么不转成简体
+
+官方名逐字照抄,**不做繁简转换**。转出来的字符串会被当成官方名,而官方简体译法并不总是逐字对应 ——
+这正是上一版 68 条被官方名顶掉的原因(我把 `crossbow` 系列写成「弩·集束榴弹」,官方是「集束擲彈」;
+`frost_wall` 我写「霜墙」,官方「冰牆」)。
+
+界面其余部分(菜单、按钮、提示、日志)仍是**简体**;只有这一列是繁體,为的是列内一致、且不与官方数据打架。
+想要官方简体名:**在 Steam 里给 PoE2 下载"简体中文"语言包**,然后用 `--language "simplified chinese"` 重跑下面的脚本。
+本机验证过:`data/balance/languages.dat` 注册了 `Simplified Chinese (zh-CN)`,但 `data/balance/simplified chinese/` 目前 0 文件。
+
+## 客户端里的数据形状(每条都踩过一次)
+
+- 名字表在 `data/balance/`,共 3,588 个文件,绝大多数 `.datc64`;语言覆盖表在 `data/balance/<语言>/`,
+  本机装了 `traditional chinese`(219 张表,66.7 MB)等 9 种语言,**没有简体**。
+- **`.datc64` 不是压缩的** —— 列式容器 + **UTF-16LE** 字符串池。普通 `strings` 什么都看不到,必须 `-el`。
+- 一行的字符串在池中连续排列:`Id, Name, Description, Icon, …`;Name 为空的行,下一格就是 Description,
+  所以取名字要按**形状**判断(短句、无句号、非标识符),不能只看位置。
+- 字符串之间有 **2 字节对齐填充**:"紧邻"要允许 0/2/4/6 字节的缝,按相等判断会整表落空。
+- 覆盖表与基础表**行序一致、Id 列保持 ASCII**,所以按 Id 文本对齐就能拿到本地化名,不需要 schema
+  (`vendor/libggpk3/LibDat2.dll` 是这类表的正式读法,但它要 `schema.min.json` 才能给列命名,只为取名字不值当引)。
 
 ## 重挖步骤
 
-脚本不进仓库(读的是第三方二进制,产物要人过一遍)。工作目录各自分开:
-
 ```bash
 IDX="$HOME/.local/share/Steam/steamapps/common/Path of Exile 2/Bundles2/_.index.bin"
-mkdir -p /tmp/pszh/data /tmp/pszh/bin        # 数据与脚本分目录
-pscli read-file --index "$IDX" --path "data/balance/activeskills.datc64" \
-                --out /tmp/pszh/data/activeskills_en.datc64
-pscli read-file --index "$IDX" --path "data/balance/traditional chinese/activeskills.datc64" \
-                --out /tmp/pszh/data/activeskills_tw.datc64        # 官方简体到位后换成 simplified chinese/
-python3 -I …        # 解析 + join,产物是 id → 官方名 的待审清单
+python3 -I scripts/mine-zh-names.py --index "$IDX" --pscli dist/cli-linux-x64/pscli all
+#   names  → /tmp/pszh/out/names.tsv      官方类别名(技能 + 区域/幕/联赛)
+#   terms  → /tmp/pszh/out/terms.tsv      官方 [英文|繁體] 术语表 → docs/zh-terms.md
+#   areas  → /tmp/pszh/out/areas.json     acts / worldareas / leaguenames 全量官方名
+# 装了简体中文语言包后加:--language "simplified chinese"
 ```
 
-解析要点(踩过的坑):
-1. 字符串以 `0000` 结束,但池里还有 2 字节对齐填充 —— “紧邻”要允许 0/2/4/6 字节的缝,按等式判断会全表落空。
-2. `Id` 判定用 `[a-z0-9_]+` 形状即可,但 Name 槽要排除形状像描述的(含 `。`/句号、超长)。
+产物是**待审清单**,不是直接覆盖词表:脚本只报命中率,人来决定哪几条并入,并保留"官方/我们起名"的文件分界。
 
-## join 规则(为什么不是"包含")
+### join 规则:为什么不是"包含"
 
-类别 Id 的技能段(`crossbow_stormblast`、`bow_tornado_shot`)和 ActiveSkills 的行 Id(`stormblast_bolts`、
-`tornado`)用词顺序都不固定,所以 join 只做**词元集合相等**,并允许剥掉最多两个**类别前缀**——
-前缀资格由"在我们自己的 Id 里作为首词出现 ≥5 次"决定(`bow`、`fire`、`cold`…;`shot` 不算,它从不打头)。
+类别 Id 的技能段(`bow_tornado_shot`)与表里的行 Id(`tornado`、`tornado_shot`)用词顺序都不固定。
+子串匹配出过三个真错:`cold_arcticarmour` 含 `arc` 被标成「電弧」、`bow_tornado_shot` 抓到德鲁伊的
+`tornado` 被标成「龍捲風」、`flaming_wrath` 抓到 `wrath` 被标成「雷霆」。
 
-曾经用"子串包含",结果:`cold_arcticarmour` 因为含 `arc` 被标成「電弧」,`bow_tornado_shot` 抓到德鲁伊的
-`tornado` 被标成「龍捲風」,`flaming_wrath` 抓到 `wrath` 被标成「雷霆」。**一个共有名词不足以认定是同一个技能。**
-现在:多义/多条命中一律丢弃,不猜。丢弃与漏配的行由显示期框架兜底(`RulePack.LabelFor` → 「技能: 原名」),
-所以覆盖率低只是名字粗,不会再出现整行纯英文。
+现在只认**剥掉最多两个类别前缀后的词元集合相等**,前缀资格由"在我们自己的 Id 里作首词出现 ≥5 次"决定
+(`bow`/`fire`/`reservation` 算,`shot` 从不打头所以不算),多义一律丢弃不猜。
+**一个共有名词不足以认定同一个技能 —— 勾选项挂错名字会让人按错行下手,比挂英文更糟。**
 
-## 当前状态(2026-11-17)
+区域类走另一条路:`env.*`/`terrain.*`/`league.*` 用 `worldareas`/`acts`/`leaguenames` 的键直接对齐
+(`env.g3_5` ↔ `G3_5` = 「龍蜥濕地」)。带变体后缀的(`g3_3_new`、`act6_four`)另存 `zone-approx.tsv`,
+**算我们起的名字**,不算官方。
 
-| 指标 | 数 |
-|---|---|
-| 类别总数(本机规则包) | 992 |
-| 词表条目 | 427 |
-| 其中来自客户端官方名(逐字繁体) | 190 —— 新增 122、改写我原先手写 68 |
-| ActiveSkills 可挖行 / 我们技能段命中 | 1,146 行 / 190 条(歧义 0) |
-| 显示后无任何汉字的行数 | **0**(改前 464) |
+## 界面其它文案
 
-改写那 68 条的原因:官方用词和我造的不是一回事,尤其是**官方名不带武器/元素前缀**,我却一律加了上去:
+日志/状态/异常里的纯英文句子已改成「中文 / 英文」双语(`MainWindow.axaml.cs`、`AppService.cs` 等);
+**异常堆栈本身保持原样** —— 那是提 issue 时要贴的东西,翻译它只会让两边对不上。
+命令行 `pscli` 的 72 条帮助/输出文本仍是英文,属有意范围外。
 
-| 类别 Id | 我造的 | 官方 |
-|---|---|---|
-| `skill.cold_frostwall` | 冰霜·霜墙 | 冰牆 |
-| `skill.chaos_contagion` | 混沌·传染 | 瘟疫 |
-| `skill.bow_snipe` | 弓·狙击 | 狙擊 |
-| `skill.aura_purity` | 光环·纯净 | 元素淨化 |
-| `skill.crossbow_cluster_grenade` | 弩·集束榴弹 | 集束擲彈 |
-| `skill.spear_glaciallance` | 长矛·冰川长枪 | 冰川之槍 |
+## 验证入口
 
-这条教训值得记住:**能给官方名就别自己起名。**
-
-反例也要记住:`skill.crossbow` 那条「弩」至今仍在表里、没有被官方名替换(它对应的是
-`metadata/effects/spells/crossbow/` 这种通用目录,ActiveSkills 里没有同名行)。早期用子串匹配时
-它"命中"过一个「十字弓射擊」,那是别的行的名字,**已随子串规则一起废弃 —— 不要把那份结果当成官方名**。
+门槛 `bash scripts/test-all.sh`;词表守卫在 `tests/PsTests/Program.cs` 的 `labels:` 段
+(简体字形黑名单、两表不重叠、框架词与 `Classify` 一致、官方样本逐字不变);
+看图用 `dotnet run -c Release --project tools/gui-shot`(见 [[headless-gui-screenshot]] 那类经验:
+测试全绿也会漏掉行高/换行问题)。

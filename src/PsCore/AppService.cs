@@ -120,11 +120,11 @@ public sealed class AppService
         var store = TargetStore.For(request.Game);
 
         if (!store.Exists())
-            throw new FileNotFoundException("PoE2 data file not found", store.TargetPath);
+            throw new FileNotFoundException("找不到 PoE2 数据文件 / PoE2 data file not found", store.TargetPath);
 
         if (GameProcessGuard.IsGameRunning(out var processes) && !request.Force)
             throw new InvalidOperationException(
-                $"PoE2 appears to be running ({string.Join(", ", processes)}). Close the game first.");
+                $"PoE2 正在运行({string.Join(", ", processes)}),请先完全关闭游戏再操作 / PoE2 appears to be running — close the game first.");
 
         _paths.Ensure();
         var state = LoadMatchingState(request.Game);
@@ -139,7 +139,7 @@ public sealed class AppService
             if (IsOneOfOurs(currentHash, state))
             {
                 if (!File.Exists(state.BackupPath))
-                    throw new FileNotFoundException("Backup of the applied state is missing", state.BackupPath);
+                    throw new FileNotFoundException("上次应用时的 index 备份不存在 / backup of the applied state is missing", state.BackupPath);
 
                 store.RestoreBackup(state.BackupPath);
                 store.DeleteCustomBundles();
@@ -153,8 +153,8 @@ public sealed class AppService
                 // The game was updated (or the index was changed by another tool).
                 if (store.HasCustomBundles() && !request.Force)
                     throw new InvalidOperationException(
-                        "Index changed since the last apply (game update?) and custom bundles still exist. " +
-                        "Use --force to discard the old state and continue.");
+                        "index 自上次应用后已变化(游戏更新?)且仍有自定义 bundle。确认要丢弃旧状态再加 --force / " +
+                        "index changed since the last apply (game update?) and custom bundles still exist — use --force to discard the old state.");
 
                 StateStore.Delete(_paths);
                 store.DeleteCustomBundles();
@@ -172,8 +172,8 @@ public sealed class AppService
         {
             if (!request.Force)
                 throw new InvalidOperationException(
-                    "LibGGPK3 custom bundles exist but there is no state file. " +
-                    "Restore/clean them first, or use --force to discard them.");
+                    "存在 LibGGPK3 自定义 bundle 但没有状态文件。先还原/清理它们,或加 --force 直接丢弃 / " +
+                    "LibGGPK3 custom bundles exist but there is no state file — restore/clean them first, or use --force to discard them.");
             store.DeleteCustomBundles();
         }
 
@@ -218,7 +218,7 @@ public sealed class AppService
                 foreach (var change in plan.Changes)
                 {
                     if (!work.TryGetFile(change.Path, out var record) || record == null)
-                        throw new FileNotFoundException("File disappeared from index", change.Path);
+                        throw new FileNotFoundException("该文件已不在 index 中 / file disappeared from the index", change.Path);
 
                     // Compression changes carry the exact bytes computed at plan time: a LOD swap
                     // needs a sibling read, and re-running a codec here could only drift from what
@@ -371,7 +371,7 @@ public sealed class AppService
     {
         if (GameProcessGuard.IsGameRunning(out var processes) && !request.Force)
             throw new InvalidOperationException(
-                $"PoE2 appears to be running ({string.Join(", ", processes)}). Close the game first.");
+                $"PoE2 正在运行({string.Join(", ", processes)}),请先完全关闭游戏再操作 / PoE2 appears to be running — close the game first.");
 
         var store = TargetStore.For(request.Game);
         var state = LoadMatchingState(request.Game);
@@ -382,7 +382,7 @@ public sealed class AppService
         {
             if (request.Game.IsGgpk)
                 throw new InvalidOperationException(
-                    "--index-url downloads a Bundles2/_.index.bin and only works for the Steam client.");
+                    "--index-url 下载的是 Bundles2/_.index.bin,只适用于 Steam 版 / --index-url downloads a Bundles2/_.index.bin and only works for the Steam client.");
 
             backup = DownloadIndex(request.IndexUrl, request.Game.BundlesDir);
         }
@@ -396,21 +396,20 @@ public sealed class AppService
         {
             if (state is not { PatchedFiles.Count: > 0 })
                 throw new InvalidOperationException(
-                    "A tier filter restores the files this tool recorded in state.json, and there is no " +
-                    "such record for this install. Restore everything instead (no --undo-tiers).");
+                    "按档位还原只撤销本工具在 state.json 里记录过的文件,而这份安装没有可还原的记录 —— 请不带 --undo-tiers 做整档还原 / " +
+                    "a tier filter restores only the files this tool recorded in state.json, and there is no such record here — restore everything instead (no --undo-tiers).");
 
             if (!string.IsNullOrWhiteSpace(request.BackupPath) || !string.IsNullOrWhiteSpace(request.IndexUrl))
                 throw new InvalidOperationException(
-                    "A tier filter restores per file and cannot be combined with --backup/--index-url, " +
-                    "which replace the whole index.");
+                    "按档位还原是逐文件还原,不能与整档替换的 --backup/--index-url 同时用 / a tier filter restores per file and cannot be combined with --backup/--index-url, which replace the whole index.");
             if (request.CleanOnly)
                 throw new InvalidOperationException(
-                    "--clean-only deletes every custom bundle; that would corrupt the files a tier " +
-                    "filter is keeping suppressed. Restore without a filter instead.");
+                    "--clean-only 会删除全部自定义 bundle,连同按档位还原本应保留的屏蔽文件一起损坏 —— 请不带档位过滤再还原 / " +
+                    "--clean-only deletes every custom bundle, including files a tier filter keeps suppressed — restore without a filter instead.");
             if (request.Force)
                 throw new InvalidOperationException(
-                    "--force restores the whole backup over the current index, undoing far more than the " +
-                    "requested tiers. Drop --force to restore a subset.");
+                    "--force 会用整份备份覆盖当前 index,撤销范围远大于所选档位 —— 想只还原子集请不要加 --force / " +
+                    "--force restores the whole backup over the current index, undoing far more than the requested tiers. Drop --force to restore a subset.");
         }
 
         if (request.CleanOnly)
@@ -424,7 +423,7 @@ public sealed class AppService
             return new RestoreResult
             {
                 CleanedCustomBundles = cleaned,
-                Message = "Custom bundles removed (index unchanged)."
+                Message = "已删除自定义 bundle,index 未改动 / custom bundles removed (index unchanged)."
             };
         }
 
@@ -438,18 +437,18 @@ public sealed class AppService
             return RestorePerFile(state, request.Game, store, request.UndoTiers);
 
         if (string.IsNullOrWhiteSpace(backup))
-            throw new InvalidOperationException("No backup path is known. Run with --backup <file> or apply first.");
+            throw new InvalidOperationException("没有已知备份路径:先用 --backup <文件> 指定,或先应用一次 / no backup path is known — pass --backup <file> or apply first.");
 
         if (!File.Exists(backup))
-            throw new FileNotFoundException("Backup not found", backup);
+            throw new FileNotFoundException("找不到备份文件 / backup not found", backup);
 
         var backupHash = HashUtil.Sha256File(backup);
         if (state != null && !IsOneOfOurs(currentHash, state))
         {
             if (!request.Force)
                 throw new InvalidOperationException(
-                    "The current index is not the one produced by this tool (game updated or changed). " +
-                    "Refusing to overwrite it with an old backup. Use --force if you are sure.");
+                    "当前 index 不是本工具写出的那份(游戏已更新或被改动),拒绝用旧备份覆盖;确认无误请加 --force / " +
+                    "the current index is not the one produced by this tool (game updated or changed); refusing to overwrite it with an old backup. Use --force if you are sure.");
 
             AppLog.Warn(_paths, "Restore forced over a changed index.");
         }
@@ -468,7 +467,7 @@ public sealed class AppService
             {
                 RestoredIndex = false,
                 CleanedCustomBundles = cleaned,
-                Message = "Index already matches the backup."
+                Message = "index 与备份已一致,无需还原 / index already matches the backup."
             };
         }
 
@@ -489,7 +488,7 @@ public sealed class AppService
         {
             RestoredIndex = true,
             CleanedCustomBundles = cleaned,
-            Message = $"Restored {store.TargetPath}"
+            Message = $"已从备份还原 index:{store.TargetPath} / restored from backup: {store.TargetPath}"
         };
     }
 
@@ -528,24 +527,24 @@ public sealed class AppService
         {
             if (!read.TryGetFile(entry.Path, out var record) || record == null)
                 throw new InvalidDataException(
-                    $"Post-apply verification: {entry.Path} is missing from the committed index.");
+                    $"写后校验失败:{entry.Path} 不在已提交的 index 里 / post-apply verification: {entry.Path} is missing from the committed index.");
 
             if (record.Size != entry.AppliedSize)
                 throw new InvalidDataException(
-                    $"Post-apply verification: {entry.Path} is {record.Size} bytes, apply recorded {entry.AppliedSize}.");
+                    $"写后校验失败:{entry.Path} 实际 {record.Size} 字节,应用时记录的是 {entry.AppliedSize} / post-apply verification: size mismatch for {entry.Path}.");
 
             var bundlePath = record.BundleRecord?.Path ?? "";
             if (!string.Equals(bundlePath, entry.AppliedBundlePath, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException(
-                    $"Post-apply verification: {entry.Path} points at bundle '{bundlePath}', " +
-                    $"apply wrote it into '{entry.AppliedBundlePath}'.");
+                    $"写后校验失败:{entry.Path} 指向 '{bundlePath}',而应用写入的是 '{entry.AppliedBundlePath}' / " +
+                    $"post-apply verification: {entry.Path} points at bundle '{bundlePath}', apply wrote it into '{entry.AppliedBundlePath}'.");
 
             if (boundaries.Contains(entry.Path))
             {
                 var live = record.Read().ToArray();
                 if (HashUtil.Sha256Bytes(live).Equals(entry.AppliedSha256, StringComparison.OrdinalIgnoreCase) == false)
                     throw new InvalidDataException(
-                        $"Post-apply verification: {entry.Path} does not contain the bytes apply wrote.");
+                        $"写后校验失败:{entry.Path} 的内容不是应用当时写入的字节 / post-apply verification: {entry.Path} does not contain the bytes apply wrote.");
 
                 checkedContent++;
             }
@@ -710,15 +709,18 @@ public sealed class AppService
         }
 
         var message = undoTiers is { Count: > 0 }
-            ? $"Per-file restore of {string.Join("/", undoTiers.OrderBy(t => t))}: " +
-              $"{restored} restored, {kept.Count} kept suppressed, {unresolved.Count} unresolvable, " +
-              $"{skipped.Count} skipped."
+            ? $"按档位还原({string.Join("/", undoTiers.OrderBy(t => t))}):还原 {restored} 个、保留屏蔽 {kept.Count} 个、" +
+              $"无法处理 {unresolved.Count} 个、跳过 {skipped.Count} 个 / per-file restore of " +
+              $"{string.Join("/", undoTiers.OrderBy(t => t))}: {restored} restored, {kept.Count} kept suppressed, " +
+              $"{unresolved.Count} unresolvable, {skipped.Count} skipped."
             : unresolved.Count > 0
-                ? $"Per-file restore: {restored} restored, {skipped.Count} skipped, {unresolved.Count} kept suppressed (original bundle missing)."
-                : $"Per-file restore: {restored} restored, {skipped.Count} skipped (changed by update, kept new content).";
+                ? $"逐档还原:还原 {restored} 个、跳过 {skipped.Count} 个、{unresolved.Count} 个仍屏蔽(原 bundle 已不在)/ " +
+                  $"per-file restore: {restored} restored, {skipped.Count} skipped, {unresolved.Count} kept suppressed (original bundle missing)."
+                : $"逐档还原:还原 {restored} 个、跳过 {skipped.Count} 个(已被游戏更新改写,保留新内容)/ " +
+                  $"per-file restore: {restored} restored, {skipped.Count} skipped (changed by update, kept new content).";
         if (skipped.Count > 0)
         {
-            message += " Skipped: " + string.Join(", ", skipped.Take(10)) +
+            message += $" 跳过:{string.Join(", ", skipped.Take(10))} / skipped: " +
                        (skipped.Count > 10 ? $" (+{skipped.Count - 10} more)" : "");
         }
 
@@ -753,13 +755,13 @@ public sealed class AppService
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
             (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
-            throw new ArgumentException("Index URL must be an absolute http/https URL.", nameof(url));
+            throw new ArgumentException("index 网址必须是完整的 http/https 地址 / index URL must be an absolute http/https URL", nameof(url));
 
         _paths.Ensure();
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
         var bytes = http.GetByteArrayAsync(uri).GetAwaiter().GetResult();
         if (bytes.Length < 1024)
-            throw new InvalidDataException($"Downloaded index is too small: {bytes.Length} bytes");
+            throw new InvalidDataException($"下载的 index 太小({bytes.Length} 字节),不像有效文件 / downloaded index is too small: {bytes.Length} bytes");
 
         var path = Path.Combine(_paths.BackupsDir,
             $"download-{DateTime.UtcNow:yyyyMMdd-HHmmss-fff}-_.index.bin");
@@ -769,7 +771,7 @@ public sealed class AppService
         {
             using var session = IndexSession.OpenReadOnly(path, bundlesDir);
             if (session.Index.Files.Count == 0 || session.Index.Bundles.Length == 0)
-                throw new InvalidDataException("Downloaded file is not a usable _.index.bin");
+                throw new InvalidDataException("下载的文件不是可用的 _.index.bin / downloaded file is not a usable _.index.bin");
             AppLog.Info(_paths, $"Downloaded index: {uri} -> {path}");
             return path;
         }

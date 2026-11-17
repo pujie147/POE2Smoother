@@ -51,14 +51,14 @@ public static class GameLocator
         }
 
         if (!File.Exists(full))
-            throw new FileNotFoundException("File not found", full);
+            throw new FileNotFoundException("文件不存在 / file not found", full);
 
         if (string.Equals(Path.GetFileName(full), StandaloneLocator.GgpkFileName, StringComparison.OrdinalIgnoreCase))
             return StandaloneLocator.FromGgpk(full);
 
         var location = SteamLibraryLocator.FromIndex(full);
         if (!File.Exists(location.IndexPath))
-            throw new FileNotFoundException("Not a usable _.index.bin", location.IndexPath);
+            throw new FileNotFoundException("这不是可用的 _.index.bin / not a usable _.index.bin", location.IndexPath);
         return location;
     }
 }

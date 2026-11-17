@@ -148,9 +148,16 @@ Check("rules: safe excludes leagues", !safeIds.Contains("league.delirium"));
 // ---------------------------------------------------------------------------
 // Effect labels (zh table + bilingual pairing)
 // ---------------------------------------------------------------------------
-Check("labels: shipped table loads", EffectLabels.Count >= 200, $"count={EffectLabels.Count}");
-Check("labels: every key looks like group.slug",
-    EffectLabels.All.Keys.All(k => k.Contains('.') && !k.Contains(' ') && k == k.ToLowerInvariant()));
+Check("labels: shipped tables load", EffectLabels.Count >= 900 && EffectLabels.OfficialAll.Count >= 250 && EffectLabels.NamedAll.Count >= 600, $"count={EffectLabels.Count} official={EffectLabels.OfficialAll.Count} named={EffectLabels.NamedAll.Count}");
+// `monsters` and `misc` are real ids without a namespace dot (Classify emits them as-is); every
+// other key must be group.slug so a future edit cannot invent an id the builder never produces.
+Check("labels: every key is a builder id",
+    EffectLabels.All.Keys.All(k => (k == "monsters" || k == "misc") ||
+                                   (k.Contains('.') && !k.Contains(' ') && k == k.ToLowerInvariant())),
+    string.Join(",", EffectLabels.All.Keys
+        .Where(k => k != "monsters" && k != "misc" &&
+                    (!k.Contains('.') || k.Contains(' ') || k != k.ToLowerInvariant()))
+        .Take(5)));
 Check("labels: every value carries Chinese",
     EffectLabels.All.Values.All(v => v.Any(ch => ch >= 0x4E00 && ch <= 0x9FFF)));
 
@@ -162,12 +169,12 @@ var labelled = new RuleCategory
     Group = "mtx",
     Label = new Dictionary<string, string> { ["zh"] = "旧名", ["en"] = "MTX: Spells" }
 };
-Check("labels: table wins over the pack's zh", labelled.LabelFor("zh") == "技能外观", labelled.LabelFor("zh"));
+Check("labels: table wins over the pack's zh", labelled.LabelFor("zh") == "法術外觀", labelled.LabelFor("zh"));
 Check("labels: en still comes from the pack", labelled.LabelFor("en") == "MTX: Spells");
 var zhFirst = labelled.LabelPair("zh");
 var enFirst = labelled.LabelPair("en");
-Check("labels: zh puts Chinese first", zhFirst.Primary == "技能外观" && zhFirst.Secondary == "MTX: Spells");
-Check("labels: en flips the order", enFirst.Primary == "MTX: Spells" && enFirst.Secondary == "技能外观");
+Check("labels: zh puts Chinese first", zhFirst.Primary == "法術外觀" && zhFirst.Secondary == "MTX: Spells");
+Check("labels: en flips the order", enFirst.Primary == "MTX: Spells" && enFirst.Secondary == "法術外觀");
 
 // Ids the table does not cover must fall back to the pack, not to an empty cell.
 var uncatalogued = new RuleCategory
@@ -228,7 +235,7 @@ var (shaderPack, _) = RulePackBuilder.Build(["metadata/materials/environment/rai
 var shader = shaderPack.Categories.First(c => c.Id == "env.rainshader.fxgraph");
 Check("labels: file extension hidden from the name",
     shader.Label["en"] == "Environment material: Rainshader" &&
-    shader.Label["zh"] == "环境材质: Rainshader", $"{shader.Label["zh"]} | {shader.Label["en"]}");
+    shader.Label["zh"] == "環境材質: Rainshader", $"{shader.Label["zh"]} | {shader.Label["en"]}");
 Check("labels: id keeps the extension so old presets still match", shader.Id == "env.rainshader.fxgraph");
 
 // Packs written before the builder framed the zh slot carry the bare English folder name there, so
@@ -237,10 +244,10 @@ Check("labels: id keeps the extension so old presets still match", shader.Id == 
 foreach (var (id, group, frame) in new[]
          {
              ("skill.zzz_unseen", "skills", "技能: "),
-             ("env.zzz_unseen", "environment", "环境: "),
+             ("env.zzz_unseen", "environment", "環境: "),
              ("terrain.zzz_unseen", "environment", "地形: "),
-             ("mtx.zzz_unseen", "mtx", "外观: "),
-             ("league.zzz_unseen", "leagues", "联赛: ")
+             ("mtx.zzz_unseen", "mtx", "外觀: "),
+             ("league.zzz_unseen", "leagues", "聯賽: ")
          })
 {
     var stale = new RuleCategory
@@ -265,7 +272,7 @@ var doubleFramed = new RuleCategory
     Label = new Dictionary<string, string> { ["en"] = "Environment material: Desert Dust" }
 };
 Check("labels: english frame is dropped before framing",
-    doubleFramed.LabelFor("zh") == "环境: Desert Dust", doubleFramed.LabelFor("zh"));
+    doubleFramed.LabelFor("zh") == "環境: Desert Dust", doubleFramed.LabelFor("zh"));
 
 // Already-Chinese labels must never get a second frame.
 var framed = new RuleCategory
@@ -275,6 +282,21 @@ var framed = new RuleCategory
     Label = new Dictionary<string, string> { ["zh"] = "火焰", ["en"] = "Fire" }
 };
 Check("labels: chinese label is not framed again", framed.LabelFor("zh") == "火焰");
+
+// An old pack wrote its frame in 简体 ("环境: Aow"). It already has Chinese, so the framing branch
+// does not touch it — without the rewrite it would sit in a column of 繁體 names in two scripts.
+var staleFrame = new RuleCategory
+{
+    Id = "env.aow",
+    Group = "environment",
+    Label = new Dictionary<string, string> { ["zh"] = "环境: Aow", ["en"] = "Environment: Aow" }
+};
+Check("labels: stale simplified frame is rewritten", staleFrame.LabelFor("zh") == "環境: Aow",
+    staleFrame.LabelFor("zh"));
+Check("labels: the rewrite never touches the en side", staleFrame.LabelFor("en") == "Environment: Aow");
+Check("labels: a name we ship is never reframed",
+    new RuleCategory { Id = "env.g3_5", Group = "environment", Label = new() { ["zh"] = "环境: G3 5" } }
+        .LabelFor("zh") == "龍蜥濕地");
 // …and ids outside the builder's namespaces (foreign packs, test fixtures) stay untouched.
 var unknownNamespace = new RuleCategory
 {
@@ -295,6 +317,62 @@ foreach (var (id, official) in new[]
     var shipped = EffectLabels.TryGet(id, out var value) ? value : "";
     Check($"labels: official name kept verbatim for {id}", shipped == official, shipped);
 }
+
+// The Chinese column is 繁體 end to end: official names are copied from the client's zh-TW tables,
+// and everything we translate ourselves has to match that script, or the column mixes two alphabets
+// row by row (which is exactly what the "先下简体语言包" plan was meant to avoid).
+// Characters identical in both scripts (屏 範 餘 林 平 束) are deliberately NOT listed — an
+// over-eager list would have failed on the client's own data.
+const string SimplifiedOnly =
+    "为伞门车东长风云电闪圣礼术处击图极枪关问间类系统测观让认设语说报执扩护挂净准点断无显机权条标档录员广庆传优伤体华变叙厅历双发钟铁银链锁键雾虚载隐炽泽宝内齐龙齿梦实宠审宪对导尽届层干台於范";
+
+bool HasSimplified(string text) => text.Any(c => SimplifiedOnly.Contains(c));
+var simplifiedInOfficial = EffectLabels.OfficialAll.Where(kv => HasSimplified(kv.Value)).Select(kv => kv.Key).ToList();
+var simplifiedInNamed = EffectLabels.NamedAll.Where(kv => HasSimplified(kv.Value)).Select(kv => kv.Key).ToList();
+Check("labels: official table is Traditional", simplifiedInOfficial.Count == 0,
+    string.Join(",", simplifiedInOfficial.Take(6)));
+Check("labels: our table is Traditional too", simplifiedInNamed.Count == 0,
+    string.Join(",", simplifiedInNamed.Take(6)));
+Check("labels: frame words are Traditional",
+    EffectLabels.FrameWords.Values.All(v => !HasSimplified(v)),
+    string.Join(",", EffectLabels.FrameWords.Values.Where(HasSimplified)));
+
+// Two files instead of one plus a "source" field: an id must not be listed in both, or which name
+// wins depends on load order and the provenance claim becomes unverifiable.
+var shared = EffectLabels.OfficialAll.Keys.Intersect(EffectLabels.NamedAll.Keys, StringComparer.OrdinalIgnoreCase).ToList();
+Check("labels: official and named tables do not overlap", shared.Count == 0, string.Join(",", shared.Take(6)));
+Check("labels: merged table keeps every row",
+    EffectLabels.Count == EffectLabels.OfficialAll.Count + EffectLabels.NamedAll.Count,
+    $"{EffectLabels.Count} vs {EffectLabels.OfficialAll.Count}+{EffectLabels.NamedAll.Count}");
+Check("labels: official wins when asked",
+    EffectLabels.IsOfficial("skill.arc") && !EffectLabels.IsOfficial("mtx.spells"));
+
+// Classify's build-time frames and EffectLabels' display-time frames must use the same words, or an
+// old pack and a freshly rebuilt one read differently for the same category.
+foreach (var (id, expect) in new[]
+         {
+             ("skill.zzz_a_b", "技能: "), ("env.zzz_a_b", "環境: "), ("terrain.zzz_a_b", "地形: "),
+             ("mtx.zzz_a_b", "外觀: "), ("league.zzz_a_b", "聯賽: ")
+         })
+{
+    var built = new RuleCategory
+    {
+        Id = id,
+        Group = "x",
+        Label = new Dictionary<string, string> { ["en"] = "A B" }
+    };
+    Check($"labels: display frame matches the {expect} wording", built.LabelFor("zh").StartsWith(expect),
+        built.LabelFor("zh"));
+}
+var rebuilt = RulePackBuilder.Build(
+    ["metadata/effects/spells/zzz_thing/a.ao", "metadata/effects/environment/zzz_thing/a.ao",
+     "metadata/effects/microtransactions/zzz_thing/a.ao", "metadata/terrain/leagues/zzz_thing/a.ao"],
+    "Frames", "test");
+foreach (var (id, expect) in new[] { ("skill.zzz_thing", "技能: "), ("env.zzz_thing", "環境: "),
+                                         ("mtx.zzz_thing", "外觀特效: "), ("terrain.zzz_thing", "地形: ") })
+    Check($"labels: rebuilt pack frames with {expect}",
+        rebuilt.Pack.Categories.First(c => c.Id == id).Label["zh"].StartsWith(expect),
+        rebuilt.Pack.Categories.First(c => c.Id == id).Label["zh"]);
 
 // ---------------------------------------------------------------------------
 // Path helpers

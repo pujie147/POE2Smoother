@@ -17,7 +17,7 @@ public static class StandaloneLocator
     {
         var full = Path.GetFullPath(ggpkPath);
         var gameRoot = Path.GetDirectoryName(full)
-                       ?? throw new InvalidOperationException($"Cannot get game root from {ggpkPath}");
+                       ?? throw new InvalidOperationException($"无法从 {ggpkPath} 定位游戏根目录 / cannot get game root from {ggpkPath}");
         return new GameLocation(gameRoot, "", "", null, GameLocationKind.StandaloneGgpk, full);
     }
 

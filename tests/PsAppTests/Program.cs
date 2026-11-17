@@ -89,6 +89,13 @@ RulePackStore.Save(new RulePack
     }
 }, packPath);
 
+// The drop-downs hold items (bilingual labels), not bare tokens: select by id the way the app does.
+static object ItemById(object source, string id) =>
+    ((System.Collections.IEnumerable)source).Cast<object>()
+        .First(i => (i.GetType().Name == "PresetItem" ? ((dynamic)i).Id
+                     : i.GetType().Name == "LanguageItem" ? ((dynamic)i).Id
+                     : (string)i) == id);
+
 var window = new MainWindow();
 var gamePath = window.FindControl<TextBox>("GamePathBox");
 var categoryGroupList = window.FindControl<ItemsControl>("CategoryGroupList");
@@ -140,18 +147,19 @@ if (fireZh.Label != "火焰" || fireZh.LabelSecondary != "Fire" || fireZh.CountT
 // The shipped table overrides what the pack stored, which is how old rule packs get current
 // wording without a GGPK re-scan.
 var mtxZh = groups.Single(g => g.Group == "mtx").Categories.Single(c => c.Id == "mtx.spells");
-if (mtxZh.Label != "技能外观" || mtxZh.LabelSecondary != "MTX")
+if (mtxZh.Label != "法術外觀" || mtxZh.LabelSecondary != "MTX")
     throw new Exception($"label table should win over the pack's own zh: {mtxZh.Label} | {mtxZh.LabelSecondary}");
 
-languageBox.SelectedItem = "en";
+languageBox.SelectedItem = ItemById(languageBox.ItemsSource, "en");
 Dispatcher.UIThread.RunJobs();
 var fireEn = groups.Single(g => g.Group == "skills").Categories.Single(c => c.Id == "skill.fire");
 if (fireEn.Label != "Fire" || fireEn.LabelSecondary != "火焰" || fireEn.CountText != "1 files")
     throw new Exception($"en should lead with the English name: {fireEn.Label} | {fireEn.LabelSecondary} | {fireEn.CountText}");
-languageBox.SelectedItem = "zh";
+languageBox.SelectedItem = ItemById(languageBox.ItemsSource, "zh");
 Dispatcher.UIThread.RunJobs();
 
 // The search box matches both languages whichever one is primary.
+// The pack says 迷雾 (simplified, written in 2026-11) while the shipped table renders 迷霧 — both must find the row.
 searchBox.Text = "迷雾";
 Dispatcher.UIThread.RunJobs();
 if (groups.Count != 1 || groups[0].Group != "leagues")
@@ -220,7 +228,7 @@ if (mtxRow.IsSelected != true)
     throw new Exception("group checkbox should recover to checked");
 
 // switching preset re-seeds every group
-presetBox.SelectedItem = "performance";
+presetBox.SelectedItem = ItemById(presetBox.ItemsSource, "performance");
 Dispatcher.UIThread.RunJobs();
 groups = (ObservableCollection<CategoryGroupRow>)categoryGroupList.ItemsSource!;
 if (groups.Single(g => g.Group == "leagues").IsSelected != true ||
@@ -290,7 +298,7 @@ RulePackStore.Save(new RulePack
     ],
     Presets = new() { ["safe"] = ["skill.*", "mtx.*"], ["full"] = ["*"] }
 }, foreignSafe);
-presetBox.SelectedItem = "safe";
+presetBox.SelectedItem = ItemById(presetBox.ItemsSource, "safe");
 Dispatcher.UIThread.RunJobs();
 loadPack.Invoke(window, [foreignSafe]);
 refreshStatus.Invoke(window, null);

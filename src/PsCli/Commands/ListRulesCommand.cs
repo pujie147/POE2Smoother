@@ -39,6 +39,10 @@ internal static class ListRulesCommand
                         c.Group,
                         label,
                         labelSecondary = secondary,
+                        // official = copied out of the client's own tables, ours = translated by us,
+                        // framed = no Chinese name yet. Lets a diff tell a stale table from a thin one.
+                        labelSource = EffectLabels.IsOfficial(c.Id) ? "official"
+                            : EffectLabels.Has(c.Id) ? "ours" : "framed",
                         rules = c.Rules.Count,
                         experimental = c.Rules.Count(r => r.Experimental),
                         fx = c.Rules.Count(r => r.Tier == RiskTier.Fx),
@@ -75,12 +79,16 @@ internal static class ListRulesCommand
             }
         }
 
-        // The maintenance signal for PsRules/Labels/labels-zh.json: without it there is no way to
-        // tell a thin table from a saturated one while the list keeps growing with each client build.
-        var curated = pack.Categories.Count(c => EffectLabels.Has(c.Id));
+        // The maintenance signal for the two label tables. Splitting official from ours matters:
+        // after a client update it is the official rows that can go stale (folder ids change, new
+        // skills appear), while ours stay valid translations of names the client never lists.
+        var named = pack.Categories.Count(c => EffectLabels.Has(c.Id));
+        var official = pack.Categories.Count(c => EffectLabels.IsOfficial(c.Id));
         Console.WriteLine();
-        Console.WriteLine($"词表已收录 {curated}/{pack.Categories.Count} 类(表内 {EffectLabels.Count} 条),其余显示「技能: X」式中文前缀 / " +
-                          $"{curated} of {pack.Categories.Count} categories have a curated zh name ({EffectLabels.Count} table entries).");
+        Console.WriteLine($"名称来源 / name provenance:{pack.Categories.Count - named} 类无名字,走框架兜底 / " +
+                          $"{named} of {pack.Categories.Count} categories carry a Chinese name — " +
+                          $"{official} copied from the client's own tables, {named - official} translated by us " +
+                          $"({pack.Categories.Count - named} still framed).");
         return 0;
     }
 }

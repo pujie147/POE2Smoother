@@ -6,29 +6,34 @@ public sealed record RulePackBuildStats(int PathsScanned, int Rules, int Categor
 
 public static class RulePackBuilder
 {
+    /// <remarks>
+    /// 繁體 to match both label tables — the column would otherwise mix scripts by row.
+    /// `breach` is 「裂痕」 and `azmeri` 「阿茲莫里」 because the client's own term table says so
+    /// (docs/zh-terms.md); the rest are our renderings of well-known league/element words.
+    /// </remarks>
     private static readonly Dictionary<string, (string Zh, string En)> LeagueLabels = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["abyss"] = ("深渊", "Abyss"),
-        ["azmeri"] = ("阿兹梅里", "Azmeri"),
+        ["abyss"] = ("深淵", "Abyss"),
+        ["azmeri"] = ("阿茲莫里", "Azmeri"),
         ["breach"] = ("裂痕", "Breach"),
-        ["delirium"] = ("迷雾", "Delirium"),
-        ["expedition"] = ("探险", "Expedition"),
+        ["delirium"] = ("迷霧", "Delirium"),
+        ["expedition"] = ("探險", "Expedition"),
         ["incursion"] = ("入侵", "Incursion"),
-        ["ritual"] = ("仪式", "Ritual"),
-        ["trials"] = ("试炼", "Trials"),
+        ["ritual"] = ("儀式", "Ritual"),
+        ["trials"] = ("試煉", "Trials"),
         ["corruption"] = ("腐化", "Corruption")
     };
 
     private static readonly Dictionary<string, (string Zh, string En)> SkillLabels = new(StringComparer.OrdinalIgnoreCase)
     {
         ["fire"] = ("火焰", "Fire"),
-        ["cold"] = ("冰霜", "Cold"),
-        ["lightning"] = ("闪电", "Lightning"),
+        ["cold"] = ("冰冷", "Cold"),
+        ["lightning"] = ("閃電", "Lightning"),
         ["physical"] = ("物理", "Physical"),
         ["chaos"] = ("混沌", "Chaos"),
-        ["minions"] = ("召唤", "Minions"),
+        ["minions"] = ("召喚", "Minions"),
         ["general"] = ("通用", "General"),
-        ["support"] = ("辅助", "Support"),
+        ["support"] = ("輔助", "Support"),
         ["monsters_effects"] = ("怪物技能", "Monster skills")
     };
 
@@ -163,7 +168,7 @@ public static class RulePackBuilder
         if (lower.StartsWith(materialsEnv, StringComparison.Ordinal))
         {
             var seg = FirstSegment(lower[materialsEnv.Length..]);
-            return ($"env.{Slug(seg)}", "environment", "环境材质: " + Pretty(seg), "Environment material: " + Pretty(seg));
+            return ($"env.{Slug(seg)}", "environment", "環境材質: " + Pretty(seg), "Environment material: " + Pretty(seg));
         }
 
         const string terrainLeagues = "metadata/terrain/leagues/";
@@ -192,7 +197,7 @@ public static class RulePackBuilder
         if (lower.StartsWith(mtx, StringComparison.Ordinal))
         {
             var seg = FirstSegment(lower[mtx.Length..]);
-            return ($"mtx.{Slug(seg)}", "mtx", "外观特效: " + Pretty(seg), "MTX: " + Pretty(seg));
+            return ($"mtx.{Slug(seg)}", "mtx", "外觀特效: " + Pretty(seg), "MTX: " + Pretty(seg));
         }
 
         const string env = "metadata/effects/environment/";
@@ -202,7 +207,7 @@ public static class RulePackBuilder
         {
             var prefix = lower.StartsWith(env, StringComparison.Ordinal) ? env : weather;
             var seg = FirstSegment(lower[prefix.Length..]);
-            return ($"env.{Slug(seg)}", "environment", "环境: " + Pretty(seg), "Environment: " + Pretty(seg));
+            return ($"env.{Slug(seg)}", "environment", "環境: " + Pretty(seg), "Environment: " + Pretty(seg));
         }
 
         return ("misc", "misc", "其他特效", "Misc effects");
@@ -250,7 +255,7 @@ public static class RulePackBuilder
     /// <summary>
     /// Display-only prettifier. Drops the file extension: the material/environment root keeps its
     /// shaders loose in one folder, so their first segment is a whole filename and rows otherwise
-    /// read "环境材质: Rainshader.Fxgraph". The category id still carries the extension, so existing
+    /// read "環境材質: Rainshader.Fxgraph". The category id still carries the extension, so existing
     /// presets and profiles keep matching.
     /// </summary>
     private static string Pretty(string value)

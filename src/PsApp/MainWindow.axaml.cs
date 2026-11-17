@@ -94,10 +94,23 @@ public partial class MainWindow : Window
         };
         RestoreScopeBox.SelectedIndex = 0;
 
-        PresetBox.ItemsSource = new[] { "safe", "clean", "performance", "full" };
-        LanguageBox.ItemsSource = new[] { "zh", "en" };
-        LanguageBox.SelectedItem = _settings.Language;
-        PresetBox.SelectedItem = _settings.LastPreset;
+        // The underlying tokens stay `safe`/`zh` etc. (they are what profiles, settings and the rule
+        // pack's preset map use), but a bare English token in a Chinese UI is exactly the kind of
+        // gap this round is closing — so the visible label is bilingual and the token is kept beside it.
+        PresetBox.ItemsSource = new[]
+        {
+            new PresetItem("safe", "安全(默认)/ safe"),
+            new PresetItem("clean", "干净 / clean"),
+            new PresetItem("performance", "性能优先 / performance"),
+            new PresetItem("full", "全部 / full")
+        };
+        LanguageBox.ItemsSource = new[]
+        {
+            new LanguageItem("zh", "中文在前 / Chinese first"),
+            new LanguageItem("en", "英文在前 / English first")
+        };
+        SelectLanguage(_settings.Language);
+        SelectPreset(_settings.LastPreset);
 
         DataDirBox.Text = _paths.Root;
         RulePackBox.Text = _paths.DefaultRulePackPath;
@@ -145,7 +158,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             StatusText.Text = $"检测失败 / Detect failed: {ex.Message}";
-            AppendLog(ex.ToString());
+            LogFailure("定位游戏", ex);
         }
         finally
         {
@@ -163,7 +176,7 @@ public partial class MainWindow : Window
         _settings.LastTargetPath = _game.TargetPath;
         SaveSettings();
         UpdateKindText();
-        AppendLog($"Detected [{_game.KindLabel}]: {_game.TargetPath}");
+        AppendLog($"已定位游戏「{_game.KindLabel}」: {_game.TargetPath} / detected [{_game.KindLabel}]: {_game.TargetPath}");
     }
 
     private static string GetKindLabel(GameLocation game)
@@ -193,7 +206,7 @@ public partial class MainWindow : Window
                 AllowMultiple = false,
                 FileTypeFilter =
                 [
-                    new FilePickerFileType("PoE2 data file") { Patterns = ["*.bin", "*.ggpk"] },
+                    new FilePickerFileType("PoE2 数据文件 / PoE2 data file") { Patterns = ["*.bin", "*.ggpk"] },
                     FilePickerFileTypes.All
                 ]
             });
@@ -213,7 +226,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             SetStatus($"选择失败 / Selection failed: {ex.Message}", warn: true);
-            AppendLog(ex.ToString());
+            LogFailure("选择游戏路径", ex);
         }
     }
 
@@ -274,8 +287,8 @@ public partial class MainWindow : Window
                       "Access denied — restart this tool as administrator.", warn: true);
         }
 
-        AppendLog("Access denied while writing the game directory " +
-                  "(a Steam/standalone install under Program Files needs elevation).");
+        AppendLog("写入游戏目录被拒绝:装在 Program Files 下的 Steam/独立客户端需要管理员权限。 / " +
+                  "access denied while writing the game directory (a Steam/standalone install under Program Files needs elevation).");
     }
 
     private async Task BuildRulesAsync()
@@ -299,7 +312,8 @@ public partial class MainWindow : Window
 
             _pack = pack;
             RefreshCategories();
-            AppendLog($"Rule pack built: {stats.Rules} rules, {stats.Categories} categories, {stats.Skipped} skipped.");
+            AppendLog($"规则包已生成:{stats.Rules} 条规则、{stats.Categories} 个类别、跳过 {stats.Skipped} 个不支持的路径 / " +
+                          $"rule pack built: {stats.Rules} rules, {stats.Categories} categories, {stats.Skipped} skipped.");
             StatusText.Text = pack.RuleCount == 0
                 ? "规则包为空：index 路径解析可能失败，请查看日志。/ Rule pack is empty: path parsing may have failed."
                 : $"规则包已生成 / Rule pack built: {stats.Rules} rules.";
@@ -315,7 +329,7 @@ public partial class MainWindow : Window
                 StatusText.Text = $"生成规则包失败 / Build failed: {ex.Message}";
             }
 
-            AppendLog(ex.ToString());
+            LogFailure("生成规则包", ex);
         }
         finally
         {
@@ -330,12 +344,12 @@ public partial class MainWindow : Window
         {
             _pack = RulePackStore.Load(path);
             RefreshCategories();
-            AppendLog($"Rule pack loaded: {path}");
+            AppendLog($"已载入规则包:{path} / rule pack loaded: {path}");
         }
         catch (Exception ex)
         {
             _pack = null;
-            AppendLog($"Failed to load rule pack: {ex.Message}");
+            AppendLog($"规则包读取失败:{ex.Message} / failed to load rule pack: {ex.Message}");
         }
     }
 
@@ -349,10 +363,10 @@ public partial class MainWindow : Window
             return;
         }
 
-        var preset = PresetBox.SelectedItem as string ?? "safe";
+        var preset = PresetId() ?? "safe";
         var presetKnown = _pack.Presets.ContainsKey(preset);
         var patterns = _pack.Presets.TryGetValue(preset, out var p) ? p : ["*"];
-        var language = LanguageBox.SelectedItem as string ?? "zh";
+        var language = LanguageId() ?? "zh";
 
         foreach (var category in _pack.Categories)
         {
@@ -369,7 +383,11 @@ public partial class MainWindow : Window
                 SearchText = string.Join(' ', new[]
                 {
                     category.LabelFor("zh"), category.LabelFor("en"), category.Id, category.Group,
-                    GroupLabel(category.Group)
+                    GroupLabel(category.Group),
+                    // The pack's own zh as well: an old pack says 迷雾 while the shipped table now
+                    // renders 迷霧, and a player who learned the name from the in-game Chinese text
+                    // should still find the row by what they remember typing.
+                    category.Label.GetValueOrDefault("zh") ?? ""
                 }).ToLowerInvariant(),
                 Count = category.Rules.Count,
                 Paths = category.Rules.Select(r => r.Path).ToList(),
@@ -562,7 +580,7 @@ public partial class MainWindow : Window
             Game = _game,
             Pack = _pack,
             RulePackPath = _paths.DefaultRulePackPath,
-            Preset = PresetBox.SelectedItem as string ?? "safe",
+            Preset = PresetId() ?? "safe",
             Ignore = _ignore,
             MaxTier = CurrentTier,
             WriteStrategy = CurrentWriteStrategy,
@@ -689,7 +707,8 @@ public partial class MainWindow : Window
 
             if (plan.Changes.Count > 0)
             {
-                AppendLog($"Applied {plan.Changes.Count} files (unchanged={plan.Unchanged.Count}, skippedExp={plan.SkippedExperimental.Count}). backup={result.BackupPath}");
+                AppendLog($"已写入 {plan.Changes.Count} 个文件(内容未变 {plan.Unchanged.Count}、被风险档跳过 {plan.SkippedExperimental.Count})。备份:{result.BackupPath} / " +
+                          $"applied {plan.Changes.Count} files (unchanged={plan.Unchanged.Count}, skipped at this tier={plan.SkippedExperimental.Count}); backup={result.BackupPath}");
                 SetStatus($"应用完成 / applied — {plan.Changes.Count}/{attempted} active · {buckets}. 重启 PoE2 / Restart PoE2.");
             }
             else
@@ -703,7 +722,7 @@ public partial class MainWindow : Window
                             : plan.Unchanged.Count == attempted
                                 ? "命中的文件与替换内容完全相同,无字节变化 / every matched file already contains the replacement — nothing to change"
                                 : "勾选的类别没有命中任何文件 / the selection matched no files";
-                AppendLog($"Apply produced 0 changes. reason: {reason}");
+                AppendLog($"应用后 0 个文件变更。原因:{reason}");
                 SetStatus($"⚠ 没有生效:{reason}。未写入任何文件,游戏不会变化 / nothing applied, nothing written.", warn: true);
             }
         }
@@ -718,7 +737,7 @@ public partial class MainWindow : Window
                 StatusText.Text = $"应用失败 / Apply failed: {ex.Message}";
             }
 
-            AppendLog(ex.ToString());
+            LogFailure("应用屏蔽", ex);
         }
         finally
         {
@@ -781,7 +800,7 @@ public partial class MainWindow : Window
                 StatusText.Text = $"还原失败 / Restore failed: {ex.Message}";
             }
 
-            AppendLog(ex.ToString());
+            LogFailure("还原", ex);
         }
         finally
         {
@@ -877,7 +896,7 @@ public partial class MainWindow : Window
         var profile = new Profile
         {
             Name = name,
-            Preset = PresetBox.SelectedItem as string ?? "safe",
+            Preset = PresetId() ?? "safe",
             Categories = _rows.Where(r => r.IsSelected).Select(r => r.Id).ToList(),
             Ignore = _ignore.Prefixes.ToList()
         };
@@ -906,7 +925,7 @@ public partial class MainWindow : Window
         }
 
         _loading = true;
-        PresetBox.SelectedItem = profile.Preset;
+        SelectPreset(profile.Preset);
         TierBox.SelectedItem = TierItem.For(profile.EffectiveTier());
         BlankStyleBox.SelectedItem = WriteStrategyItem.For(profile.EffectiveWriteStrategy());
         var compression = profile.EffectiveCompression();
@@ -950,7 +969,7 @@ public partial class MainWindow : Window
     {
         if (_loading)
             return;
-        _settings.Language = LanguageBox.SelectedItem as string ?? "zh";
+        _settings.Language = LanguageId() ?? "zh";
         SaveSettings();
         RefreshCategories();
     }
@@ -1030,7 +1049,43 @@ public partial class MainWindow : Window
 
     /// <summary>The tier the user is currently armed with. Never null-safe-by-accident: an
     /// uninitialised ComboBox (no selection yet) means the safest tier, not "include everything".</summary>
+    /// <summary>
+    /// Log an exception with a Chinese frame naming the step that failed, then the raw dump. The
+    /// stack stays untranslated on purpose — it is what gets pasted into an issue, and a localised
+    /// paraphrase of it would only make the two disagree.
+    /// </summary>
+    private void LogFailure(string step, Exception ex)
+    {
+        AppendLog($"{step}时出错,以下为原始异常信息 / error during {step}; raw exception follows:");
+        AppendLog(ex.ToString());
+    }
+
     private RiskTier CurrentTier => (TierBox.SelectedItem as TierItem)?.Tier ?? RiskTier.Safe;
+
+    /// <summary>
+    /// The preset token (`safe`/`clean`/…). Read from the item when there is one and from a bare
+    /// string otherwise: profiles and the headless tests hand back the token directly, and a preset
+    /// that silently resolves to "safe" because of a cast would change what gets suppressed.
+    /// </summary>
+    private string? PresetId() => PresetBox.SelectedItem switch
+    {
+        PresetItem item => item.Id,
+        string raw => raw,
+        _ => null
+    };
+
+    private string? LanguageId() => LanguageBox.SelectedItem switch
+    {
+        LanguageItem item => item.Id,
+        string raw => raw,
+        _ => null
+    };
+
+    private void SelectPreset(string? id) =>
+        PresetBox.SelectedItem = (PresetBox.ItemsSource as PresetItem[])?.FirstOrDefault(i => i.Id == id);
+
+    private void SelectLanguage(string? id) =>
+        LanguageBox.SelectedItem = (LanguageBox.ItemsSource as LanguageItem[])?.FirstOrDefault(i => i.Id == id);
 
     /// <summary>The write strategy the user is currently armed with. Anything unrecognised means
     /// template, never zero bytes or compression: a half-initialised combo box must not silently
@@ -1128,8 +1183,8 @@ public partial class MainWindow : Window
 
     private void SaveSettings()
     {
-        _settings.LastPreset = PresetBox.SelectedItem as string ?? _settings.LastPreset;
-        _settings.Language = LanguageBox.SelectedItem as string ?? _settings.Language;
+        _settings.LastPreset = PresetId() ?? _settings.LastPreset;
+        _settings.Language = LanguageId() ?? _settings.Language;
         _settings.SetTier(CurrentTier);
         _settings.SetWriteStrategy(CurrentWriteStrategy);
         _settings.Compression = CurrentCompression;
@@ -1260,6 +1315,22 @@ public sealed record WriteStrategyItem(WriteStrategy Strategy, string Label)
         WriteStrategy.CompressThenEmpty => new WriteStrategyItem(WriteStrategy.CompressThenEmpty, "先压缩,无法压缩则 0 字节 / Compress, else 0-byte"),
         _ => new WriteStrategyItem(WriteStrategy.Template, "合法空资源 / valid empty resource")
     };
+}
+
+/// <summary>
+/// Preset / language drop-down items. Avalonia shows <c>ToString()</c>, so the label is what the
+/// player reads; <see cref="Id"/> is what profiles, settings and the rule pack's preset map key on.
+/// Reading the selection goes through <c>PresetId</c>/<c>LanguageId</c> rather than a cast, because a
+/// profile or a test may hand back the bare token.
+/// </summary>
+public sealed record PresetItem(string Id, string Label)
+{
+    public override string ToString() => Label;
+}
+
+public sealed record LanguageItem(string Id, string Label)
+{
+    public override string ToString() => Label;
 }
 
 public sealed record GroupFilterItem(string Id, string Label)

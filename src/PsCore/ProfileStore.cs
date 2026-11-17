@@ -105,7 +105,7 @@ public sealed class ProfileStore
     {
         profile.Name = SanitizeName(profile.Name);
         if (profile.Name.Length == 0)
-            throw new ArgumentException("Profile name cannot be empty.");
+            throw new ArgumentException("档案名不能为空 / profile name cannot be empty.");
         profile.UpdatedAt = DateTimeOffset.UtcNow;
 
         _paths.Ensure();
