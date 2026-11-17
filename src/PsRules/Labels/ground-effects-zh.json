@@ -1,0 +1,31 @@
+{
+  "$note": "地面特效目录 → 官方繁體名,逐字照抄:不许润色、不许转简体、不许改字形。键是路径前缀(不是类别 Id —— 一个类别里有十几个目录),给忽略列表页那棵树的第三层用。收进来的条件严格:目录词与客户端行名逐字对得上,或 buffvisuals 那行直接引用了这个目录里的 .epk。官方给不出唯一名字的目录**故意不进表**(fire、ice、invisground、chimera_smoke),界面退回显示目录原名 —— 一个冒充官方的名字比一个英文目录名糟得多。挖法与逐条出处见 docs/zh-labels.md。装了简体中文语言包后按同一套流程重挖。",
+  "version": 1,
+  "labels": {
+    "metadata/effects/spells/ground_effects/blind_smoke": "致盲",
+    "metadata/effects/spells/ground_effects/caustic": "腐蝕地面",
+    "metadata/effects/spells/ground_effects/despair_geyser": "沉重的絕望",
+    "metadata/effects/spells/ground_effects/devouring_darkness": "暗夜吞噬",
+    "metadata/effects/spells/ground_effects/evil": "腐化地面",
+    "metadata/effects/spells/ground_effects/holy": "奉獻地面",
+    "metadata/effects/spells/ground_effects/lightning": "感電地面",
+    "metadata/effects/spells/ground_effects/malachai_sporeground": "瑪拉凱孢子",
+    "metadata/effects/spells/ground_effects/quicksand": "流沙",
+    "metadata/effects/spells/ground_effects/tar": "焦油地面",
+    "metadata/effects/spells/ground_effects/vaal_cloud": "腐敗煙幕",
+    "metadata/effects/spells/ground_effects/vaal_cold_snap": "瓦爾．霜暴",
+    "metadata/effects/spells/ground_effects_v2/consecrated": "奉獻地面",
+    "metadata/effects/spells/ground_effects_v2/desecrated": "腐化地面",
+    "metadata/effects/spells/ground_effects_v2/haste": "激流",
+    "metadata/effects/spells/ground_effects_v2/smoke_blind": "致盲",
+    "metadata/effects/spells/ground_effects_v2/smoke_blind_fog_of_war_2": "致盲",
+    "metadata/effects/spells/ground_effects_v2/tar": "焦油地面",
+    "metadata/effects/spells/ground_effects_v3/brittle": "易碎地面",
+    "metadata/effects/spells/ground_effects_v3/burning": "燃燒地面",
+    "metadata/effects/spells/ground_effects_v3/caustic": "腐蝕地面",
+    "metadata/effects/spells/ground_effects_v3/profane": "褻瀆地面",
+    "metadata/effects/spells/ground_effects_v3/sapping": "殘喘",
+    "metadata/effects/spells/ground_effects_v3/scorched": "熾炎地面",
+    "metadata/effects/spells/ground_effects_v3/shocking": "感電地面"
+  }
+}

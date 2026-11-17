@@ -32,6 +32,96 @@ Check("ignore: unrelated prefix does not match", !IgnoreList.FromLines(["metadat
 Check("ignore: comments are skipped", IgnoreList.FromLines(["# comment", "", "metadata/effects/z"]).Prefixes.Count == 1);
 
 // ---------------------------------------------------------------------------
+// GroundEffectProtection — the ignore tab's ground-effect tree edits this text
+// ---------------------------------------------------------------------------
+var gV1 = GroundEffectProtection.GroundEffectsV1;
+var gV3 = GroundEffectProtection.GroundEffectsV3;
+var gBrittle = gV3 + "/brittle";
+var gBurning = gV3 + "/burning";
+// A list shaped like a real one: a default line, the player's own comment, a blank, a leaf tick.
+var gText = string.Join('\n', "metadata/monsters", "# 我自己加的,别删这行", "", gBrittle);
+
+Check("ground: 顶层是三个类别前缀", GroundEffectProtection.CategoryPrefixes.Count == 3);
+// …/ground_effects does not reach …/ground_effects_v2: IsIgnored needs prefix + "/". This is why
+// the top node writes three lines instead of one root line.
+Check("ground: v1 不覆盖 v2/v3", !GroundEffectProtection.Covers(gText, gV3));
+Check("ground: 目录行算列出,不算被覆盖行", GroundEffectProtection.Lists(gText, gBrittle) &&
+      GroundEffectProtection.CoveringLine(gText, gBrittle) == gBrittle);
+Check("ground: 注释掉的同名行不算命中",
+      !GroundEffectProtection.Covers("# " + gV3, gV3) && !GroundEffectProtection.Lists("# " + gV3, gV3));
+
+var gTickedV3 = GroundEffectProtection.Apply(gText, gV3, true);
+Check("ground: 勾整类写一行", GroundEffectProtection.Covers(gTickedV3, gV3) &&
+      GroundEffectProtection.Covers(gTickedV3, gBrittle));
+Check("ground: 勾父时收掉子孙行", !gTickedV3.Contains(gBrittle));
+// The reason the edit is text-level at all: routing the box through IgnoreList would drop every #
+// comment (Normalize returns "") and every blank line. Order and line count are what a player sees.
+Check("ground: 玩家的注释与空行都还在", gTickedV3.Contains("# 我自己加的,别删这行") &&
+      gTickedV3.Split('\n').Length == gText.Split('\n').Length &&
+      gTickedV3.StartsWith("metadata/monsters\n", StringComparison.Ordinal) &&
+      gTickedV3.Split('\n').Count(line => line.Trim().Length == 0) == 1);
+Check("ground: 勾两次不加第二行",
+      GroundEffectProtection.Apply(gTickedV3, gV3, true) == gTickedV3);
+Check("ground: 取消整类把这一行删干净", !GroundEffectProtection.Apply(gTickedV3, gV3, false).Contains(gV3));
+
+var gLeaves = GroundEffectProtection.Apply(GroundEffectProtection.Apply("", gBrittle, true), gBurning, true);
+Check("ground: 两个叶子各占一行",
+      gLeaves.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length == 2);
+Check("ground: 叶子全勾时整类算勾选(经由派生)",
+      GroundEffectProtection.Covers(gLeaves, gBrittle) && !GroundEffectProtection.Lists(gLeaves, gV3));
+// The branch reads as ticked because its children are; un-ticking it must remove those lines too,
+// otherwise the click does nothing and the derivation ticks it straight back.
+Check("ground: 取消整类也清掉子行",
+      GroundEffectProtection.Apply(gLeaves, gV3, false).Length == 0);
+
+var gMany = GroundEffectProtection.ApplyMany(gText, GroundEffectProtection.CategoryPrefixes, true);
+Check("ground: 顶层一次写三行(v1/v2/v3)",
+      GroundEffectProtection.CategoryPrefixes.All(p => GroundEffectProtection.Lists(gMany, p)));
+Check("ground: 顶层取消一次删三行",
+      !GroundEffectProtection.CategoryPrefixes.Any(p => GroundEffectProtection.Covers(
+          GroundEffectProtection.ApplyMany(gMany, GroundEffectProtection.CategoryPrefixes, false), p)));
+
+// A rule-pack rebuild merges the built-in defaults instead of replacing the list; the GUI's ticks
+// live in that text, and the pack's own copy is always the default list.
+var gMerged = GroundEffectProtection.AppendMissing(gText, IgnoreList.Default().Prefixes);
+Check("ground: 合并默认不清空已有勾选", GroundEffectProtection.Covers(gMerged, gBrittle) &&
+      gMerged.Contains("metadata/monsters") && gMerged.Contains("# 我自己加的,别删这行"));
+Check("ground: 合并幂等", GroundEffectProtection.AppendMissing(gMerged, IgnoreList.Default().Prefixes) == gMerged);
+
+// ---------------------------------------------------------------------------
+// GroundEffectTree — folders come from the pack, never from a hard-coded list
+// ---------------------------------------------------------------------------
+var (groundPack, _) = RulePackBuilder.Build(
+[
+    gBrittle + "/brittle_grd.ao",
+    gBrittle + "/fx/brittle.pet",
+    gBurning + "/burning_grd.ao",
+    gBurning + "/fade_in_burst.ao",
+    gV1 + "/holy/ground_01.ao",
+    gV1 + "/holy/holy_epk_epk_pass0.mat",
+    // A skill whose folder merely mentions ground: not a ground-effect category, must not show up.
+    "metadata/effects/spells/ground_slam_new/groundspine_01.ao",
+    // Unsupported extension: the builder never makes a rule out of it, so the tree cannot offer it.
+    gV1 + "/crown_of_thorns/crownofthornsground.ot"
+], "Ground", "test");
+
+var groundTree = GroundEffectTree.Build(groundPack);
+Check("ground: 树只有两个类别分支", groundTree.Count == 2 &&
+      groundTree.All(b => GroundEffectTree.IsGroundCategory(b.CategoryId)));
+Check("ground: ground_slam 与 .ot 目录不进树",
+      groundTree.SelectMany(b => b.Leaves).All(l => !l.Segment.Contains("slam")) &&
+      groundTree.SelectMany(b => b.Leaves).All(l => l.Segment != "crown_of_thorns"));
+var v3Branch = groundTree.First(b => b.Prefix == gV3);
+Check("ground: 叶子按目录给文件数", v3Branch.Leaves.Count == 2 &&
+      v3Branch.Leaves.First(l => l.Segment == "brittle").Count == 2 &&
+      v3Branch.Leaves.First(l => l.Segment == "burning").Count == 2);
+Check("ground: 档位分开数(材质档看得见)",
+      groundTree.SelectMany(b => b.Leaves).First(l => l.Segment == "holy").MaterialCount == 1);
+Check("ground: 目录前缀就是会写进忽略列表的那行",
+      v3Branch.Leaves.All(l => l.Prefix.StartsWith(gV3 + "/", StringComparison.Ordinal)));
+Check("ground: 没有规则包时是空树而不是崩", GroundEffectTree.Build(null).Count == 0);
+
+// ---------------------------------------------------------------------------
 // PresetSelector
 // ---------------------------------------------------------------------------
 Check("preset: skill.* matches skill.fire", PresetSelector.Matches("skill.fire", "skill.*"));
@@ -337,6 +427,25 @@ Check("labels: frame words are Traditional",
     EffectLabels.FrameWords.Values.All(v => !HasSimplified(v)),
     string.Join(",", EffectLabels.FrameWords.Values.Where(HasSimplified)));
 
+// The third table is the same promise in a different key space — folder paths instead of category
+// ids — so it belongs to the same sweep, and every key has to be a real ground-effect folder rather
+// than a name that can never be reached from the tree.
+var simplifiedInEffectDirs = EffectLabels.EffectDirAll.Where(kv => HasSimplified(kv.Value)).Select(kv => kv.Key).ToList();
+Check("labels: ground-effect folder table is Traditional", simplifiedInEffectDirs.Count == 0,
+    string.Join(",", simplifiedInEffectDirs.Take(6)));
+Check("labels: folder names are actually Chinese",
+    EffectLabels.EffectDirAll.Values.All(EffectLabels.ContainsHan),
+    string.Join(",", EffectLabels.EffectDirAll.Where(kv => !EffectLabels.ContainsHan(kv.Value)).Select(kv => kv.Key).Take(6)));
+Check("labels: folder keys are one level under a ground category",
+    EffectLabels.EffectDirAll.Keys.All(k =>
+        GroundEffectProtection.CategoryPrefixes.Any(root =>
+            k.StartsWith(root + "/", StringComparison.OrdinalIgnoreCase) &&
+            k.IndexOf('/', root.Length + 1) < 0)),
+    string.Join(",", EffectLabels.EffectDirAll.Keys
+        .Where(k => !GroundEffectProtection.CategoryPrefixes.Any(root =>
+            k.StartsWith(root + "/", StringComparison.OrdinalIgnoreCase) && k.IndexOf('/', root.Length + 1) < 0)).Take(4)));
+Check("labels: folder table is loaded and non-trivial", EffectLabels.EffectDirCount >= 20, $"{EffectLabels.EffectDirCount}");
+
 // Two files instead of one plus a "source" field: an id must not be listed in both, or which name
 // wins depends on load order and the provenance claim becomes unverifiable.
 var shared = EffectLabels.OfficialAll.Keys.Intersect(EffectLabels.NamedAll.Keys, StringComparer.OrdinalIgnoreCase).ToList();
@@ -464,6 +573,78 @@ Check("path: from game root -> index", Path.GetFullPath(fromRoot.IndexPath) == P
         var text = Encoding.UTF8.GetString(aoRecord!.Read().ToArray());
         Check("restore: ao content original", text == originalAo);
     }
+}
+
+// ---------------------------------------------------------------------------
+// AppService.DiscardOrphanCustomBundles — the way out of the state-less dead end
+// ---------------------------------------------------------------------------
+{
+    var root = TestIndexBuilder.NewRoot("orphan");
+    var bundles = Path.Combine(root, "Bundles2");
+    var indexPath = TestIndexBuilder.Build(bundles, new[]
+    {
+        ("metadata/effects/spells/fire/fireball.ao", Encoding.UTF8.GetBytes("KeepThis();\nAddAttached( 'x' );\n"))
+    });
+    var game = SteamLibraryLocator.FromIndex(indexPath);
+    var appPaths = new AppPaths(Path.Combine(root, "home"));
+    appPaths.Ensure();
+    var service = new AppService(appPaths);
+    var (orphanPack, _) = service.BuildRules(game, "Orphan", "test");
+    var appliedOrphan = service.Apply(new ApplyRequest { Game = game, Pack = orphanPack, Preset = "safe", Force = true });
+    var orphanBackup = appliedOrphan.BackupPath;
+
+    string LiveAo()
+    {
+        using var read = IndexSession.OpenReadOnly(indexPath, bundles);
+        read.TryGetFile("metadata/effects/spells/fire/fireball.ao", out var record);
+        return Encoding.UTF8.GetString(record!.Read().ToArray());
+    }
+
+    // A state file means those bundles are the live patch: 还原 owns them, this call must not.
+    var withState = service.DiscardOrphanCustomBundles(game);
+    Check("orphan: state present means hands off",
+        withState.StateExists && withState.Removed == 0 && withState.Remaining.Count > 0 &&
+        service.GetStatus(game).CustomBundlesExist);
+
+    // The actual dead end: state.json lost, index still pointing into the bundles. Deleting them
+    // here would turn every suppressed file into a dangling record — the game would read garbage
+    // or fail, and no restore could undo it because the backup is unknown too.
+    var strippedAo = LiveAo();
+    File.Delete(appPaths.StatePath);
+    var referenced = service.DiscardOrphanCustomBundles(game);
+    Check("orphan: still-referenced bundles stay on disk",
+        !referenced.StateExists && referenced.Removed == 0 && referenced.Remaining.Count > 0);
+    Check("orphan: suppression survives the call that refused to delete", LiveAo() == strippedAo);
+
+    // A real leftover: the client was replaced, so nothing references the file any more. This is
+    // the case --force also handles, but here it is proved against the live index first. The state
+    // file is gone, so the backup has to be named — exactly what 还原 cannot do on its own, which is
+    // why the Home tab needs a route that does not go through Restore at all.
+    var blindRestore = false;
+    try
+    {
+        service.Restore(new RestoreRequest { Game = game });
+    }
+    catch (InvalidOperationException)
+    {
+        blindRestore = true;
+    }
+
+    Check("orphan: 还原在没状态文件时确实走不通(死路的另一半)", blindRestore);
+    service.Restore(new RestoreRequest { Game = game, BackupPath = orphanBackup, Force = true });
+    var cleanIndexHash = HashUtil.Sha256File(indexPath);
+    var dir = Path.Combine(bundles, BackupManager.CustomBundleDirName);
+    Directory.CreateDirectory(dir);
+    File.WriteAllText(Path.Combine(dir, "0.bundle.bin"), "leftover from an older client");
+    var hashBefore = HashUtil.Sha256File(indexPath);
+    var cleaned = service.DiscardOrphanCustomBundles(game);
+    Check("orphan: unreferenced leftover is removed",
+        cleaned.Removed == 1 && cleaned.FullyCleaned && !Directory.Exists(dir));
+    Check("orphan: cleanup never rewrites the index", HashUtil.Sha256File(indexPath) == hashBefore &&
+          hashBefore == cleanIndexHash);
+    Check("orphan: the apply guard stops firing", !service.GetStatus(game).CustomBundlesExist);
+    Check("orphan: no state means 应用 is allowed again",
+        service.Apply(new ApplyRequest { Game = game, Pack = orphanPack, Preset = "safe" }).Plan.Changes.Count == 1);
 }
 
 // ---------------------------------------------------------------------------

@@ -37,6 +37,16 @@ public sealed class ApplyRequest
     public IReadOnlySet<string>? CategoryFilter { get; init; }
 }
 
+/// <summary>
+/// Result of the leftover-bundle cleanup. <see cref="Remaining"/> is the honest part: files still
+/// referenced by a live index record stay on disk, and the caller must say so rather than let the
+/// user believe the folder is clean.
+/// </summary>
+public sealed record CustomBundleCleanup(int Removed, IReadOnlyList<string> Remaining, bool StateExists)
+{
+    public bool FullyCleaned => !StateExists && Remaining.Count == 0;
+}
+
 public sealed class ApplyResult
 {
     public required PatchPlan Plan { get; init; }
@@ -172,8 +182,11 @@ public sealed class AppService
         {
             if (!request.Force)
                 throw new InvalidOperationException(
-                    "存在 LibGGPK3 自定义 bundle 但没有状态文件。先还原/清理它们,或加 --force 直接丢弃 / " +
-                    "LibGGPK3 custom bundles exist but there is no state file — restore/clean them first, or use --force to discard them.");
+                    "存在 LibGGPK3 自定义 bundle 但没有状态文件,无法判断它们是当前补丁还是一份旧客户端留下的残骸。" +
+                    "主页那个面板可以只删没人引用的;命令行则用 --force 直接丢弃 / " +
+                    "LibGGPK3 custom bundles exist but there is no state file, so the tool cannot tell a live patch " +
+                    "from leftovers of an older client. The Home tab can discard only the unreferenced ones; " +
+                    "on the command line, --force drops them all.");
             store.DeleteCustomBundles();
         }
 
@@ -737,6 +750,36 @@ public sealed class AppService
             SkippedPaths = skipped,
             Message = message
         };
+    }
+
+    /// <summary>The tool's own leftover bundle files in this client, for display (a directory
+    /// listing only — nothing is read from the index).</summary>
+    public IReadOnlyList<string> ListCustomBundleFiles(GameLocation game) =>
+        TargetStore.For(game).ListCustomBundles();
+
+    /// <summary>
+    /// The way out of the state-less dead end, for the GUI as well as for <c>--force</c>: custom
+    /// bundles exist, <c>state.json</c> does not, so 「应用」refuses at its guard (it cannot tell a
+    /// live patch from the leftovers of a client that has since been updated) and 「还原」cannot run
+    /// either (no state means no known backup path).
+    ///
+    /// Only files that **no live index record references** are removed — the same rule the per-file
+    /// restore uses, so this can never dangle a record. Anything still referenced stays on disk and
+    /// comes back in <see cref="CustomBundleCleanup.Remaining"/> to be reported, not hidden.
+    /// With a state file present this touches nothing: 还原 is the correct route there.
+    /// </summary>
+    public CustomBundleCleanup DiscardOrphanCustomBundles(GameLocation game)
+    {
+        var store = TargetStore.For(game);
+        if (LoadMatchingState(game) != null)
+            return new CustomBundleCleanup(0, store.ListCustomBundles(), StateExists: true);
+
+        var removed = RemoveOrphanCustomBundles(game);
+        var remaining = store.ListCustomBundles();
+        AppLog.Info(_paths, remaining.Count == 0
+            ? $"已清理 {removed} 个无人引用的遗留自定义 bundle / discarded {removed} unreferenced custom bundle(s)"
+            : $"清理了 {removed} 个遗留 bundle,仍有 {remaining.Count} 个被 index 记录引用,保持原样 / discarded {removed}, {remaining.Count} still referenced and left alone");
+        return new CustomBundleCleanup(removed, remaining, StateExists: false);
     }
 
     private int RemoveOrphanCustomBundles(GameLocation game)

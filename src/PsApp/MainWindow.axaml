@@ -86,6 +86,23 @@
             <TextBlock x:Name="PackText" TextWrapping="Wrap" Foreground="#AAB2C0"/>
             <TextBlock x:Name="StateText" TextWrapping="Wrap" Foreground="#AAB2C0"/>
 
+            <!-- 没有状态文件时,「应用」被守卫拒绝、「还原」又找不到备份。这个面板是这条死路的图形出路:
+                 命令行那个强制选项会连仍被引用的 bundle 一起删,这里不会。 -->
+            <Border x:Name="OrphanBundlePanel" IsVisible="False" Background="#2A2318"
+                    CornerRadius="8" Padding="12">
+              <StackPanel Spacing="8">
+                <TextBlock x:Name="OrphanBundleText" TextWrapping="Wrap" FontWeight="SemiBold"/>
+                <TextBlock TextWrapping="Wrap" Foreground="#D8C4B0" FontSize="14"
+                  Text="这些是本工具以前写的自定义 bundle,但状态文件已经不见了:「应用」因此拒绝写入(它分不清它们是当前补丁还是一份旧客户端留下的残骸),「还原」也不知道该用哪份备份。这里只会删掉「没有任何 index 记录引用」的那些 —— 仍被引用的会原地留着并告诉你。 / These custom bundles were written by this tool, but its state file is gone: Apply refuses to write (it cannot tell a live patch from leftovers of an older client) and Restore has no backup to use. Only bundles that no live index record references at all are removed; anything still referenced stays on disk and is reported."/>
+                <StackPanel Orientation="Horizontal" Spacing="10">
+                  <Button x:Name="OrphanCleanButton" Content="清理无人引用的遗留 bundle / Discard unreferenced leftovers"
+                          Click="OnDiscardOrphanBundles" Height="44" Padding="18,0" FontSize="15"/>
+                  <TextBlock x:Name="OrphanCleanResult" VerticalAlignment="Center" Foreground="#8E97A6"
+                             TextWrapping="Wrap" MaxWidth="520"/>
+                </StackPanel>
+              </StackPanel>
+            </Border>
+
             <TextBlock Text="日志 / Log" FontWeight="SemiBold" Margin="0,8,0,0"/>
             <TextBox x:Name="LogBox" IsReadOnly="True" AcceptsReturn="True"
                      Height="280" FontFamily="Consolas,monospace" FontSize="13"
@@ -216,16 +233,77 @@
       </TabItem>
 
       <TabItem Header="忽略列表 / Ignore list">
-        <Grid RowDefinitions="Auto,*,Auto" Margin="4">
-          <TextBlock Grid.Row="0" TextWrapping="Wrap" Foreground="#AAB2C0" Margin="0,0,0,8"
-                     Text="每行一个路径前缀；# 开头为注释。列表中的路径不会被修改。"/>
-          <TextBox Grid.Row="1" x:Name="IgnoreBox" AcceptsReturn="True"
-                   FontFamily="Consolas,monospace" FontSize="13" TextWrapping="NoWrap"/>
-          <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8" Margin="0,10,0,0">
-            <Button Content="保存 / Save" Click="OnSaveIgnore" Height="44" Padding="18,0"/>
-            <Button Content="重新载入 / Reload" Click="OnReloadIgnore" Height="44" Padding="18,0"/>
-            <Button Content="恢复默认 / Reset" Click="OnResetIgnore" Height="44" Padding="18,0"/>
-          </StackPanel>
+        <Grid ColumnDefinitions="430,*" Margin="4">
+
+          <!-- 地面特效逐项保护。树是从「已载入的规则包」算出来的,不是写死的目录表:客户端改版新增一个
+               地面效果时,写死的清单会让它悄悄落在保护之外。这里列出的一定是这个工具真会去写的文件。
+               勾选状态只有一个来源 —— 右边那份列表的文本 —— 所以手改文本、载入档案、恢复默认之后
+               这棵树都会跟着变,不存在第二份状态。 -->
+          <Border Grid.Column="0" Background="#1C2026" CornerRadius="8" Padding="10,8" Margin="0,0,10,0">
+            <Grid RowDefinitions="Auto,Auto,*">
+              <TextBlock Grid.Row="0" TextWrapping="Wrap" Foreground="#AAB2C0" FontSize="13" Margin="0,0,0,8"
+                Text="勾一项 = 把它那行路径前缀写进右边的忽略列表,它下面的文件就永不被置空。取消整行请删右边那行(或勾掉它的父项)。"/>
+              <StackPanel Grid.Row="1" x:Name="GroundRootPanel" Orientation="Horizontal" Spacing="10" Margin="0,0,0,4">
+                <CheckBox IsThreeState="True" Click="OnGroundCheckClick"
+                          IsChecked="{Binding IsChecked, Mode=TwoWay}" Content="{Binding Name}"/>
+                <TextBlock Text="{Binding CountText}" Foreground="#8E97A6" VerticalAlignment="Center"/>
+              </StackPanel>
+              <TextBlock Grid.Row="2" x:Name="GroundEmptyText" IsVisible="False"
+                         HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center"
+                         Foreground="#8E97A6" TextWrapping="Wrap"
+                         Text="还没有规则包,列不出地面效果目录。&#10;Build or load a rule pack to list the ground effects."/>
+              <ScrollViewer Grid.Row="2" x:Name="GroundScroll">
+                <ItemsControl x:Name="GroundBranchList">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Grid ColumnDefinitions="Auto,*" Margin="0,2">
+                        <CheckBox Grid.Column="0" IsThreeState="True" Click="OnGroundCheckClick"
+                                  IsChecked="{Binding IsChecked, Mode=TwoWay}"
+                                  IsEnabled="{Binding IsEnabled}"
+                                  VerticalAlignment="Top" Margin="4,6,8,0"
+                                  ToolTip.Tip="{Binding Tip}"/>
+                        <Expander Grid.Column="1" Header="{Binding Header}" IsExpanded="False">
+                          <ItemsControl ItemsSource="{Binding Leaves}">
+                            <ItemsControl.ItemTemplate>
+                              <DataTemplate>
+                                <CheckBox Click="OnGroundCheckClick" FontSize="14"
+                                          IsChecked="{Binding IsChecked, Mode=TwoWay}"
+                                          IsEnabled="{Binding IsEnabled}" Margin="8,3"
+                                          ToolTip.Tip="{Binding Tip}">
+                                  <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <!-- NoWrap + MaxLines:同特效页那几行,长名字不许把行撑成两行。 -->
+                                    <TextBlock Text="{Binding Name}" MaxWidth="200" MaxLines="1" TextWrapping="NoWrap"
+                                               TextTrimming="CharacterEllipsis"/>
+                                    <TextBlock Text="{Binding NameSecondary}" IsVisible="{Binding HasSecondary}"
+                                               Foreground="#8E97A6" MaxWidth="120" MaxLines="1" TextWrapping="NoWrap"
+                                               TextTrimming="CharacterEllipsis"/>
+                                    <TextBlock Text="{Binding CountText}" Foreground="#8E97A6" FontSize="13"/>
+                                  </StackPanel>
+                                </CheckBox>
+                              </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                          </ItemsControl>
+                        </Expander>
+                      </Grid>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </ScrollViewer>
+            </Grid>
+          </Border>
+
+          <Grid Grid.Column="1" RowDefinitions="Auto,*,Auto">
+            <TextBlock Grid.Row="0" TextWrapping="Wrap" Foreground="#AAB2C0" Margin="0,0,0,8"
+                       Text="每行一个路径前缀；# 开头为注释。列表中的路径不会被修改。改动只有按「保存」或执行「应用」才写进 ignore.txt。"/>
+            <TextBox Grid.Row="1" x:Name="IgnoreBox" AcceptsReturn="True"
+                     TextChanged="OnIgnoreTextChanged"
+                     FontFamily="Consolas,monospace" FontSize="13" TextWrapping="NoWrap"/>
+            <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8" Margin="0,10,0,0">
+              <Button Content="保存 / Save" Click="OnSaveIgnore" Height="44" Padding="18,0"/>
+              <Button Content="重新载入 / Reload" Click="OnReloadIgnore" Height="44" Padding="18,0"/>
+              <Button Content="恢复默认 / Reset" Click="OnResetIgnore" Height="44" Padding="18,0"/>
+            </StackPanel>
+          </Grid>
         </Grid>
       </TabItem>
 

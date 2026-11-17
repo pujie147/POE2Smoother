@@ -62,6 +62,49 @@ python3 -I scripts/mine-zh-names.py --index "$IDX" --pscli dist/cli-linux-x64/ps
 (`env.g3_5` ↔ `G3_5` = 「龍蜥濕地」)。带变体后缀的(`g3_3_new`、`act6_four`)另存 `zone-approx.tsv`,
 **算我们起的名字**,不算官方。
 
+## 第三张表:`ground-effects-zh.json`(键 = 目录路径前缀)
+
+忽略列表页那棵地面特效树按**目录**逐项勾选,而类别 Id 装不下这件事:`skill.ground_effects_v3` 一个类别里就有
+七个目录。所以这张表的键是 `metadata/effects/spells/ground_effects_v3/brittle` 这种路径前缀,值仍是官方繁體。
+它不塞进 `labels-zh-named.json` —— 那个文件的含义是"我们起的名字",混进官方名就白拆了。
+
+**收录资格比类别名更严**,两条路二选一:
+
+1. 目录词与客户端某行的英文名**逐字对得上**:`brittle` ↔ Brittle Ground、`scorched` ↔ Scorched Ground、
+   `despair_geyser` ↔ `ground_despair_geyser` 的行名 Weight of Despair。
+2. 或者 `buffvisuals.datc64` 里那行**直接引用了这个目录里的资源** —— 这是最硬的一条,目录名与官方名不需要
+   任何语言上的相似:
+
+| buffvisuals 行 | 它引用的路径 | 官方名 |
+|---|---|---|
+| `ground_desecration` | `…/ground_effects/**evil**/evil_epk.epk` | 腐化地面 (Desecrated Ground) |
+| `ground_consecration` | `…/ground_effects/**holy**/holy_epk.epk` | 奉獻地面 (Consecrated Ground) |
+| `ground_profane` | `…/ground_effects_v3/**profane**/profane.epk` | 褻瀆地面 (Profane Ground) |
+
+`evil`/`holy` 这两个目录名和官方名八竿子打不着,靠的就是这张表 —— 客户端自己把资源路径写在了名字旁边。
+
+**两个官方名容易混,记一下**:`褻瀆地面` 是 **Profane** Ground;`腐化地面` 才是 **Desecrated** Ground
+(主动技能 `desecrate` 本身叫「褻瀆」)。按字面反推会正好弄反。
+
+**刻意不收的四个**(界面退回显示目录原名,和 `env.aow` 那条同一个规矩):
+
+| 目录 | 为什么不收 |
+|---|---|
+| `ground_effects/fire` | 燃烧地面/點燃地面/熾炎地面三个都可能是它,多义丢弃 |
+| `ground_effects/ice` | 冰緩地面(Chilled)与冰凍地面(Frozen)两个候选 |
+| `ground_effects/invisground` | 四张表里查不到对应行 |
+| `ground_effects/chimera_smoke` | 行名是 `[DNT-UNUSED] Corrupted Ground`,繁体行连名字格都没有 |
+
+读法上有一条要记住:`buffdefinitions` 一行里**第二格才是短名**,第一格常是描述(名字为空的行尤其如此)。
+`scripts/mine-zh-names.py` 目前挖的是类别名与术语对(`names`/`terms`/`areas`),**目录级这张表还没进脚本**,
+重挖这三条证据要手工:`pscli read-file` 导出 `buffdefinitions` + `buffvisuals` 的基础版与
+`traditional chinese/` 版,按行序对齐 ASCII Id,再看每行的第二格。
+
+> **待核**:`labels-zh.json` 里 `skill.cold_snap_02` = 「迸裂」很可能是误配 —— 「迸裂」是 ActiveSkills 行
+> `snap`(英文 *Snap*,消耗被冰凍/感電/點燃敵人的能量)的名字;Cold Snap 官方是 `new_cold_snap` =「霜暴」,
+> 而那个目录里是 `grd_fx.ao` + `rig.ao`(grd = ground),它的描述说"產生**冰緩地面**"。
+> 同类问题(`cold_snap_*` 这种"元素前缀 + 名字"的变体目录被剥前缀后撞上另一个技能)值得照这条路再扫一遍。
+
 ## 界面其它文案
 
 日志/状态/异常里的纯英文句子已改成「中文 / 英文」双语(`MainWindow.axaml.cs`、`AppService.cs` 等);

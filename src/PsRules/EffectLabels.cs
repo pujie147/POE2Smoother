@@ -23,12 +23,22 @@ public static class EffectLabels
     private const string OfficialResource = "PsRules.Labels.labels-zh.json";
     private const string NamedResource = "PsRules.Labels.labels-zh-named.json";
 
+    /// <summary>
+    /// Third table, different key space: <c>effect folder path → official name</c>, for the ground
+    /// effects the Ignore tab lists per folder. Category ids cannot carry those rows (one category
+    /// holds a dozen folders), and it holds only verbatim client strings — the same no-invention rule
+    /// as <see cref="OfficialResource"/>, which is why it is a separate file and not more rows in
+    /// <see cref="NamedResource"/>.
+    /// </summary>
+    private const string EffectDirResource = "PsRules.Labels.ground-effects-zh.json";
+
     private static readonly Lazy<Tables> Loaded = new(Build);
 
     private sealed record Tables(
         Dictionary<string, string> Official,
         Dictionary<string, string> Named,
-        Dictionary<string, string> Merged);
+        Dictionary<string, string> Merged,
+        Dictionary<string, string> EffectDirs);
 
     /// <summary>Names copied verbatim from the client's tables.</summary>
     public static IReadOnlyDictionary<string, string> OfficialAll => Loaded.Value.Official;
@@ -59,6 +69,28 @@ public static class EffectLabels
     /// <summary>True when the shipped name for this id is a verbatim copy from the client.</summary>
     public static bool IsOfficial(string id) =>
         !string.IsNullOrWhiteSpace(id) && Loaded.Value.Official.ContainsKey(id);
+
+    /// <summary>Official names for individual effect folders, keyed by path prefix.</summary>
+    public static IReadOnlyDictionary<string, string> EffectDirAll => Loaded.Value.EffectDirs;
+
+    /// <summary>Entries in the effect-folder table; the coverage line in <c>pscli list-rules</c>.</summary>
+    public static int EffectDirCount => Loaded.Value.EffectDirs.Count;
+
+    /// <summary>
+    /// "<c>metadata/effects/spells/ground_effects/holy</c>" → 「奉獻地面」. No frame is added on a miss:
+    /// the caller shows the folder name itself, which is what the ignore line will say anyway.
+    /// </summary>
+    public static bool TryGetEffectDir(string prefix, out string zh)
+    {
+        if (!string.IsNullOrWhiteSpace(prefix) && Loaded.Value.EffectDirs.TryGetValue(prefix.Trim(), out var value))
+        {
+            zh = value;
+            return true;
+        }
+
+        zh = "";
+        return false;
+    }
 
     /// <summary>
     /// Chinese frame per id namespace, worded exactly like <see cref="RulePackBuilder.Classify"/> so a
@@ -164,7 +196,7 @@ public static class EffectLabels
         foreach (var (id, zh) in named)
             merged.TryAdd(id, zh);
 
-        return new Tables(official, named, merged);
+        return new Tables(official, named, merged, LoadFile(EffectDirResource));
     }
 
     private static Dictionary<string, string> LoadFile(string resourceName)

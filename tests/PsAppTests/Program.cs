@@ -688,6 +688,261 @@ if (kindText.Text?.Contains("Steam") != true)
         throw new Exception("the loop must end on the original client bytes");
 }
 
+// ---------------------------------------------------------------------------
+// 地面特效树(Ignore 页左栏):勾 → 忽略列表文本 → 磁盘 → 重启
+// ---------------------------------------------------------------------------
+const string groundV3 = GroundEffectProtection.GroundEffectsV3;
+var groundPackPath = Path.Combine(home, "rulepacks", "ground.json");
+RulePackStore.Save(new RulePack
+{
+    Name = "Ground UI",
+    Categories =
+    [
+        new RuleCategory
+        {
+            Id = "skill.ground_effects",
+            Group = "skills",
+            Label = new() { ["zh"] = "地面效果特效", ["en"] = "Ground Effects" },
+            Rules =
+            [
+                new Rule { Path = "metadata/effects/spells/ground_effects/holy/ground_01.ao", Strategy = StrategyKind.StripAttachments },
+                new Rule { Path = "metadata/effects/spells/ground_effects/invisground/rig.ao", Strategy = StrategyKind.StripAttachments }
+            ]
+        },
+        new RuleCategory
+        {
+            Id = "skill.ground_effects_v3",
+            Group = "skills",
+            Label = new() { ["zh"] = "地面效果三版", ["en"] = "Ground Effects V3" },
+            Rules =
+            [
+                new Rule { Path = groundV3 + "/brittle/brittle_grd.ao", Strategy = StrategyKind.StripAttachments },
+                new Rule { Path = groundV3 + "/brittle/fx/brittle.pet", Strategy = StrategyKind.NullPet },
+                new Rule { Path = groundV3 + "/profane/profane_epk_pass0.mat", Strategy = StrategyKind.NullMaterial }
+            ]
+        },
+        // 名字里也带 ground,但它是一个技能的特效,不是"地面效果":不该出现在这棵树里。
+        new RuleCategory
+        {
+            Id = "skill.ground_slam_new",
+            Group = "skills",
+            Label = new() { ["zh"] = "裂地重擊(新版)", ["en"] = "Ground Slam" },
+            Rules = [new Rule { Path = "metadata/effects/spells/ground_slam_new/groundspine_01.ao", Strategy = StrategyKind.StripAttachments }]
+        }
+    ],
+    Presets = new()
+    {
+        ["safe"] = ["skill.*", "mtx.*"],
+        ["clean"] = ["skill.*", "mtx.*", "league.*"],
+        ["performance"] = ["league.*"],
+        ["full"] = ["*"]
+    }
+}, groundPackPath);
+
+// A window with no rule pack loaded cannot list folders it has never seen: the tree's empty state
+// has to say so instead of showing a box of checkboxes that protects nothing.
+var bareWindow = new MainWindow();
+if (bareWindow.FindControl<TextBlock>("GroundEmptyText") is not { IsVisible: true })
+    throw new Exception("a window without a rule pack must explain why the ground tree is empty");
+
+loadPack.Invoke(window, new object[] { groundPackPath });
+Dispatcher.UIThread.RunJobs();
+
+var groundList = window.FindControl<ItemsControl>("GroundBranchList")
+                 ?? throw new Exception("GroundBranchList missing");
+var groundRows = groundList.ItemsSource as ObservableCollection<GroundRow>
+                 ?? throw new Exception("the ground tree is not bound to its rows");
+if (groundRows.Count != 2 || groundRows.Sum(r => r.Leaves.Count) != 4)
+    throw new Exception($"the tree must show the two ground categories and their four folders, got " +
+                        $"{groundRows.Count} branches / {groundRows.Sum(r => r.Leaves.Count)} leaves");
+if (groundRows.Any(r => r.Name.Contains("Slam") || r.Leaves.Any(l => l.Prefix.Contains("ground_slam"))))
+    throw new Exception("ground_slam is a skill, not a ground effect — it must not be in the tree");
+
+// Names: shipped official label with the folder name beside it (the folder name is what lands in
+// ignore.txt, so hiding it would make the two halves of the tab unreadable against each other), and
+// the folder name alone where the table deliberately has no entry.
+var holyLeaf = groundRows.SelectMany(r => r.Leaves).First(l => l.Prefix.EndsWith("/holy", StringComparison.Ordinal));
+if (holyLeaf.Name != "奉獻地面" || holyLeaf.NameSecondary != "holy")
+    throw new Exception($"the holy folder must read 奉獻地面 / holy, got {holyLeaf.Name} / {holyLeaf.NameSecondary}");
+var invisLeaf = groundRows.SelectMany(r => r.Leaves).First(l => l.Prefix.EndsWith("/invisground", StringComparison.Ordinal));
+if (invisLeaf.Name != "invisground" || invisLeaf.HasSecondary)
+    throw new Exception($"a folder with no official name must show its own name, got {invisLeaf.Name}");
+var brittleLeaf = groundRows.SelectMany(r => r.Leaves).First(l => l.Prefix.EndsWith("/brittle", StringComparison.Ordinal));
+if (!brittleLeaf.CountText.Contains("2"))
+    throw new Exception($"the brittle folder carries two files: {brittleLeaf.CountText}");
+
+// Ticking a branch writes ONE line and every folder under it reads as protected-but-not-separate:
+// un-ticking a child would mean deleting the parent's line, which is not what a click on the child
+// can honestly do. SetGroundProtection is the single entry point the tree's Click handler calls.
+var setProtection = typeof(MainWindow).GetMethod("SetGroundProtection",
+    BindingFlags.Instance | BindingFlags.NonPublic) ?? throw new Exception("SetGroundProtection not found");
+var groundIgnoreBox = window.FindControl<TextBox>("IgnoreBox") ?? throw new Exception("IgnoreBox missing");
+var v3Branch = groundRows.First(r => r.Prefix == groundV3);
+// Earlier sections of this file really apply and really save the list, so the file may exist with
+// unrelated content; what a tick must not do is touch it.
+var ignoreFile = Path.Combine(home, "ignore.txt");
+string IgnoreOnDisk() => File.Exists(ignoreFile) ? File.ReadAllText(ignoreFile) : "";
+var diskBeforeTick = IgnoreOnDisk();
+setProtection.Invoke(window, new object[] { new List<string> { groundV3 }, true });
+Dispatcher.UIThread.RunJobs();
+if (!groundIgnoreBox.Text!.Contains(groundV3))
+    throw new Exception($"ticking a branch must write its line: {groundIgnoreBox.Text}");
+if (!v3Branch.IsEnabled || v3Branch.IsChecked != true)
+    throw new Exception("a branch with a line of its own stays ticked and enabled");
+if (brittleLeaf.IsChecked != true || brittleLeaf.IsEnabled)
+    throw new Exception($"a folder covered by its branch must read ticked+disabled, got {brittleLeaf.IsChecked}/{brittleLeaf.IsEnabled}");
+if (invisLeaf.IsEnabled != true || invisLeaf.IsChecked == true)
+    throw new Exception("the other category is untouched and must stay tickable");
+
+// The tick is only text until 保存 (or an apply) puts it on disk — same rule as editing the box.
+if (IgnoreOnDisk() != diskBeforeTick)
+    throw new Exception("ticking a tree row must not write ignore.txt by itself");
+var saveIgnore = typeof(MainWindow).GetMethod("OnSaveIgnore",
+    BindingFlags.Instance | BindingFlags.NonPublic) ?? throw new Exception("OnSaveIgnore not found");
+saveIgnore.Invoke(window, new object?[] { null, null });
+if (!File.ReadAllText(ignoreFile).Contains(groundV3))
+    throw new Exception("saving the list must carry the ground line to disk");
+
+// The restart round-trip: the tree has no storage of its own, so a reopened window reads the file
+// back and shows the same tick — and opening it must still not rewrite settings.json.
+var settingsBefore = File.ReadAllText(Path.Combine(home, "settings.json"));
+var reopenedGround = new MainWindow();
+var reopenedBox = reopenedGround.FindControl<TextBox>("IgnoreBox")
+                  ?? throw new Exception("IgnoreBox missing on a reopened window");
+if (!reopenedBox.Text!.Contains(groundV3))
+    throw new Exception("a reopened window must load the ignore list from disk");
+loadPack.Invoke(reopenedGround, new object[] { groundPackPath });
+Dispatcher.UIThread.RunJobs();
+var reopenedRows = (reopenedGround.FindControl<ItemsControl>("GroundBranchList")!.ItemsSource as ObservableCollection<GroundRow>)!;
+var reopenedV3 = reopenedRows.First(r => r.Prefix == groundV3);
+if (reopenedV3.IsChecked != true)
+    throw new Exception("the ground tree must come back ticked after a restart");
+if (File.ReadAllText(Path.Combine(home, "settings.json")) != settingsBefore)
+    throw new Exception("restoring the ignore list at startup must not rewrite the settings file");
+
+// Un-tick the top node: it owns no single line (…/ground_effects does not reach …/_v2), so one
+// click has to remove all three category lines.
+setProtection.Invoke(window, new object[] { GroundEffectProtection.CategoryPrefixes.ToList(), false });
+Dispatcher.UIThread.RunJobs();
+if (groundIgnoreBox.Text!.Contains("ground_effects"))
+    throw new Exception($"un-ticking the top node must clear every ground line: {groundIgnoreBox.Text}");
+if (v3Branch.IsChecked == true)
+    throw new Exception("the branch must read un-ticked once its line is gone");
+
+// ---------------------------------------------------------------------------
+// 遗留 bundle 面板:状态文件丢了以后,GUI 里那条死路的出口
+// ---------------------------------------------------------------------------
+{
+    var orphanRoot = PsTests.TestIndexBuilder.NewRoot("ui-orphan");
+    const string orphanAoPath = "metadata/effects/spells/fire/fireball.ao";
+    var orphanIndex = PsTests.TestIndexBuilder.Build(Path.Combine(orphanRoot, "Bundles2"),
+        new (string, byte[])[]
+        {
+            (orphanAoPath, Encoding.UTF8.GetBytes("version 1\nAddAttached( 'x' );\nKeepThis();\n"))
+        });
+    var orphanBundles = Path.Combine(orphanRoot, "Bundles2");
+    var orphanGame = new PsCore.GameLocation(orphanRoot, orphanBundles, orphanIndex);
+    var orphanService = new PsCore.AppService(new PsCore.AppPaths());   // same POE2SMOOTHER_HOME as the window
+    var (orphanPack, _) = orphanService.BuildRules(orphanGame, "Orphan UI", "test");
+    var orphanApplied = orphanService.Apply(new PsCore.ApplyRequest
+    {
+        Game = orphanGame,
+        Pack = orphanPack,
+        Preset = "safe"
+    });
+
+    gameField.SetValue(window, orphanGame);
+    var panel = window.FindControl<Border>("OrphanBundlePanel")
+                ?? throw new Exception("OrphanBundlePanel missing");
+    var cleanButton = window.FindControl<Button>("OrphanCleanButton")
+                      ?? throw new Exception("OrphanCleanButton missing");
+    var cleanResult = window.FindControl<TextBlock>("OrphanCleanResult")
+                      ?? throw new Exception("OrphanCleanResult missing");
+    var orphanText = window.FindControl<TextBlock>("OrphanBundleText")
+                     ?? throw new Exception("OrphanBundleText missing");
+
+    // Bundles + state file = a live patch, not leftovers: nothing to offer here, 还原 owns it.
+    refreshStatus.Invoke(window, null);
+    Dispatcher.UIThread.RunJobs();
+    if (panel.IsVisible)
+        throw new Exception("the leftover panel must stay hidden while a state file explains the bundles");
+
+    // Now the dead end as it actually happens: state.json gone, the client still reading our bundle.
+    File.Delete(Path.Combine(home, "state.json"));
+    refreshStatus.Invoke(window, null);
+    Dispatcher.UIThread.RunJobs();
+    if (!panel.IsVisible)
+        throw new Exception("the leftover panel must appear when bundles exist with no state file");
+    if (orphanText.Text?.Contains("1") != true)
+        throw new Exception($"the panel should name how many files it found: {orphanText.Text}");
+
+    // The cleanup scans the whole index on a background task. "Settled" = the button is live again
+    // AND the result line says something new: SetBusy disables the button for the duration (a second
+    // click would start a second scan), and waiting on the text is what proves the handler finished
+    // rather than that the click merely landed.
+    void PumpSettled(string before, string what)
+    {
+        for (var i = 0; i < 1200; i++)
+        {
+            Dispatcher.UIThread.RunJobs();
+            Thread.Sleep(5);
+            if (cleanButton.IsEnabled && !string.Equals(cleanResult.Text, before, StringComparison.Ordinal))
+                return;
+        }
+
+        throw new Exception($"the leftover cleanup never reported a result ({what}): {cleanResult.Text}");
+    }
+
+    var liveBeforeCleanup = File.ReadAllBytes(orphanIndex);
+    var resultBeforeCleanup = cleanResult.Text ?? "";
+    cleanButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+    PumpSettled(resultBeforeCleanup, "leftover cleanup");
+
+    // The whole point: these bundles ARE referenced, so the click must refuse to delete them and
+    // say so, instead of turning every suppressed file into a dangling record like --force would.
+    if (!Directory.Exists(Path.Combine(orphanBundles, "LibGGPK3")))
+        throw new Exception($"referenced bundles must survive the cleanup, result was: {cleanResult.Text}");
+    if (cleanResult.Text?.Contains("引用") != true && cleanResult.Text?.Contains("referenced") != true)
+        throw new Exception($"the result has to say what it kept: {cleanResult.Text}");
+    if (File.ReadAllBytes(orphanIndex).SequenceEqual(liveBeforeCleanup) != true)
+        throw new Exception("the cleanup must not touch the index");
+    using (var read = PsCore.IndexSession.OpenReadOnly(orphanIndex, orphanBundles))
+    {
+        read.TryGetFile(orphanAoPath, out var strippedRecord);
+        var text = Encoding.UTF8.GetString(strippedRecord!.Read().ToArray());
+        if (text.Contains("AddAttached"))
+            throw new Exception("the suppression has to keep working after a refused cleanup");
+    }
+
+    // A genuine leftover (client replaced underneath us): nothing references it, so it goes.
+    orphanService.Restore(new PsCore.RestoreRequest
+    {
+        Game = orphanGame,
+        BackupPath = orphanApplied.BackupPath,
+        Force = true
+    });
+    var leftoverDir = Path.Combine(orphanBundles, "LibGGPK3");
+    Directory.CreateDirectory(leftoverDir);
+    File.WriteAllText(Path.Combine(leftoverDir, "0.bundle.bin"), "leftover from an older client");
+    var cleanIndexBytes = File.ReadAllBytes(orphanIndex);
+    refreshStatus.Invoke(window, null);
+    Dispatcher.UIThread.RunJobs();
+    if (!panel.IsVisible)
+        throw new Exception("an unreferenced leftover with no state file must also raise the panel");
+    var resultBeforeSecond = cleanResult.Text ?? "";
+    cleanButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+    PumpSettled(resultBeforeSecond, "leftover cleanup 2");
+    if (Directory.Exists(leftoverDir))
+        throw new Exception($"an unreferenced leftover must be removed: {cleanResult.Text}");
+    if (panel.IsVisible)
+        throw new Exception("the panel must disappear once there is nothing left to clean");
+    if (File.ReadAllBytes(orphanIndex).SequenceEqual(cleanIndexBytes) != true)
+        throw new Exception("discarding a leftover must not rewrite the index");
+
+    // The apply guard has to be off this case, which was the original complaint.
+    gameField.SetValue(window, (PsCore.GameLocation?)null);
+}
+
 window.Show();
 Dispatcher.UIThread.RunJobs();
 Console.WriteLine("GUI headless smoke test passed.");

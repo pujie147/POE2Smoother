@@ -11,6 +11,8 @@
          name tables, labels-zh-named.json is our translation of what those tables do not cover. -->
     <EmbeddedResource Include="Labels/labels-zh.json" />
     <EmbeddedResource Include="Labels/labels-zh-named.json" />
+    <!-- Folder-level names for the ground-effect tree: keyed by path prefix, official 繁體 only. -->
+    <EmbeddedResource Include="Labels/ground-effects-zh.json" />
   </ItemGroup>
 
   <ItemGroup>

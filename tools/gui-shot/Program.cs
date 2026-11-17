@@ -13,6 +13,7 @@ using Avalonia.LogicalTree;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using PsApp;
+using PsRules;
 
 var argsList = args.ToList();
 string Value(string flag, string fallback)
@@ -43,6 +44,7 @@ Dispatcher.UIThread.RunJobs();
 window.UpdateLayout();
 
 var list = window.FindControl<ItemsControl>("CategoryGroupList")!;
+var groundList = window.FindControl<ItemsControl>("GroundBranchList")!;
 var searchBox = window.FindControl<TextBox>("CategorySearchBox")!;
 var groupFilter = window.FindControl<ComboBox>("GroupFilterBox")!;
 var languageBox = window.FindControl<ComboBox>("LanguageBox")!;
@@ -60,7 +62,9 @@ void Shoot(string name, Action setup)
     setup();
     Dispatcher.UIThread.RunJobs();
     window.UpdateLayout();
-    foreach (var expander in list.GetLogicalDescendants().OfType<Expander>())
+    // Both trees, so the ignore tab's ground folders are visible too and not just its branches.
+    foreach (var expander in list.GetLogicalDescendants().OfType<Expander>()
+                 .Concat(groundList.GetLogicalDescendants().OfType<Expander>()))
         expander.IsExpanded = true;
     Dispatcher.UIThread.RunJobs();
     window.UpdateLayout();
@@ -96,3 +100,28 @@ Shoot("mtx-en", () =>
     tabs.SelectedIndex = 1; SelectLanguage("en"); searchBox.Text = ""; SelectGroup("mtx");
 });
 Shoot("home-zh", () => tabs.SelectedIndex = 0);
+// 遗留 bundle 面板平时藏着(只在"bundle 在、状态不在"时出现),所以强制显示它来验版式:
+// 那段中英双语说明最长,能不能把主页挤变形只能看图,不能猜。
+Shoot("home-orphan-zh", () =>
+{
+    tabs.SelectedIndex = 0;
+    var panel = window.FindControl<Border>("OrphanBundlePanel")!;
+    panel.IsVisible = true;
+    window.FindControl<TextBlock>("OrphanBundleText")!.Text =
+        "发现 1 个遗留自定义 bundle,但没有状态文件(0.bundle.bin) / 1 leftover custom bundle file(s), no state file";
+    window.FindControl<TextBlock>("OrphanCleanResult")!.Text =
+        "删了 0 个,但仍有 1 个被 index 引用,说明客户端里还有生效的补丁 / removed 0, but 1 is still referenced";
+});
+// 忽略列表页:左边那棵地面特效树 + 右边那份列表,同一屏要同时成立。
+Shoot("ignore-zh", () => tabs.SelectedIndex = 2);
+// 勾上一整个类别之后的样子:子目录必须是"勾上且灰掉",顶层必须是半选 —— 这三种状态在
+// 同一屏里同时成立才算数,光看断言看不出色差与缩进。
+Shoot("ignore-ticked-zh", () =>
+{
+    tabs.SelectedIndex = 2; SelectLanguage("zh");
+    var set = typeof(MainWindow).GetMethod("SetGroundProtection",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+    // 勾第一类就够:同一屏里三种状态同时出现 —— 顶层半选、类别行勾着且可点、
+    // 它名下的子目录"勾上但灰掉"(取消它得动父行那句话才成立)。
+    set.Invoke(window, new object[] { new List<string> { GroundEffectProtection.GroundEffectsV1 }, true });
+});

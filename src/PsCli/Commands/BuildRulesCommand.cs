@@ -18,8 +18,12 @@ internal static class BuildRulesCommand
         var (pack, stats) = service.BuildRules(game, name, build);
         RulePackStore.Save(pack, outPath);
 
-        var ignore = IgnoreList.FromLines(pack.Ignore);
-        ignore.Save(paths.DefaultIgnorePath);
+        // Merged, never overwritten. pack.Ignore is always the built-in default list (AppService.BuildRules
+        // passes no IgnoreList), and this file is where the GUI's ground-effect tree keeps its state —
+        // rewriting it here would silently un-protect whatever the player had ticked.
+        var existing = File.Exists(paths.DefaultIgnorePath) ? File.ReadAllText(paths.DefaultIgnorePath) : "";
+        var merged = GroundEffectProtection.AppendMissing(existing, pack.Ignore);
+        File.WriteAllText(paths.DefaultIgnorePath, merged.EndsWith('\n') ? merged : merged + "\n");
 
         if (args.HasFlag("json"))
         {

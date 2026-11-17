@@ -20,9 +20,11 @@ public partial class MainWindow : Window
     private readonly AppSettings _settings;
     private readonly ObservableCollection<CategoryRow> _rows = [];
     private readonly ObservableCollection<CategoryGroupRow> _groups = [];
+    private readonly ObservableCollection<GroundRow> _groundBranches = [];
 
     private GameLocation? _game;
     private RulePack? _pack;
+    private GroundRow? _groundRoot;
     private IgnoreList _ignore = IgnoreList.Default();
     private bool _loading;
     private bool _restoreArmed;
@@ -38,6 +40,13 @@ public partial class MainWindow : Window
         _profiles = new ProfileStore(_paths);
         _settings = SettingsStore.Load(_paths);
         CategoryGroupList.ItemsSource = _groups;
+
+        // The ignore list on disk is the one storage the ground-effect tree has: the boxes show
+        // exactly these lines, so a window that started from the built-in defaults would display a
+        // protection state that is not the one 应用 would use (and pressing 保存 would then quietly
+        // drop the player's own lines). On startup we read it, when it exists.
+        if (File.Exists(_paths.DefaultIgnorePath))
+            _ignore = IgnoreList.Load(_paths.DefaultIgnorePath);
 
         // 恢复档位必须排在任何会触发 SaveSettings 的赋值之前,并且整个构造期间由 _loading 挡住
         // SelectionChanged:给 ComboBox 赋 ItemsSource/SelectedItem 会同步触发处理器,处理器里的
@@ -115,10 +124,16 @@ public partial class MainWindow : Window
         DataDirBox.Text = _paths.Root;
         RulePackBox.Text = _paths.DefaultRulePackPath;
         LogPathBox.Text = AppLog.PathFor(_paths);
+        // Filled while still inside the _loading window, and before anything reads it: the ground
+        // tree derives its ticks from this text, and a TextBox that gains a TextChanged handler
+        // must not fire it (and from there SaveSettings) during construction — 85f908a was a
+        // checkbox restored outside this window.
+        IgnoreBox.Text = string.Join(Environment.NewLine, _ignore.Prefixes);
+        GroundBranchList.ItemsSource = _groundBranches;
+        UpdateGroundTree();
         _loading = false;
 
         LogBox.Text = string.Join(Environment.NewLine, AppLog.ReadTail(_paths, 120));
-        IgnoreBox.Text = string.Join(Environment.NewLine, _ignore.Prefixes);
         RefreshProfiles();
 
         Opened += OnOpened;
@@ -306,9 +321,12 @@ public partial class MainWindow : Window
                 _service.BuildRules(_game, "PoE2 Core Effects", "unknown"));
 
             RulePackStore.Save(pack, _paths.DefaultRulePackPath);
-            _ignore = IgnoreList.FromLines(pack.Ignore);
+            // Merged, not replaced: pack.Ignore is always the built-in default list, and this box is
+            // what the ground-effect tree derives its ticks from — swapping it for the defaults would
+            // un-protect, in silence, everything the player had just ticked.
+            IgnoreBox.Text = GroundEffectProtection.AppendMissing(IgnoreBox.Text ?? "", pack.Ignore);
+            _ignore = IgnoreList.FromLines((IgnoreBox.Text ?? "").Split('\n'));
             _ignore.Save(_paths.DefaultIgnorePath);
-            IgnoreBox.Text = string.Join(Environment.NewLine, _ignore.Prefixes);
 
             _pack = pack;
             RefreshCategories();
@@ -414,6 +432,9 @@ public partial class MainWindow : Window
         }
 
         UpdateTierHint();
+        // The ground-effect tree reads its folders off the pack, so it is rebuilt on exactly the
+        // same triggers: a new pack, a language switch (the row names change), a preset change.
+        UpdateGroundTree();
     }
 
     /// <summary>
@@ -875,7 +896,201 @@ public partial class MainWindow : Window
     {
         _ignore = IgnoreList.Default();
         IgnoreBox.Text = string.Join(Environment.NewLine, _ignore.Prefixes);
-        StatusText.Text = "已恢复默认忽略列表 / Default ignore list restored.";
+        StatusText.Text = "已恢复默认忽略列表(地面效果的保护也一并取消)/ default ignore list restored — ground-effect protection cleared with it.";
+    }
+
+    // ---------------------------------------------------------------------------------
+    // 地面特效逐项保护(Ignore 页左栏那棵树)
+    // ---------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Rebuilds the ground-effect tree from the loaded rule pack. Called whenever the pack changes
+    /// (and on a language switch, because the row names come from the label tables): the folders are
+    /// read off the pack instead of a hard-coded list so a client update that renames or adds one
+    /// cannot leave a ground effect silently outside the protection the player thinks they set.
+    /// </summary>
+    private void UpdateGroundTree()
+    {
+        var branches = GroundEffectTree.Build(_pack);
+        var english = (LanguageId() ?? "zh").Equals("en", StringComparison.OrdinalIgnoreCase);
+
+        _groundBranches.Clear();
+        foreach (var branch in branches)
+        {
+            var row = new GroundRow
+            {
+                Name = GroundBranchName(branch.CategoryId, english),
+                Prefix = branch.Prefix,
+                Targets = [branch.Prefix],
+                Count = branch.FileCount,
+                EnglishCounts = english
+            };
+
+            foreach (var leaf in branch.Leaves)
+            {
+                var official = EffectLabels.TryGetEffectDir(leaf.Prefix, out var zh) ? zh : null;
+                // The folder name is never hidden: it is the string that ends up in ignore.txt, and a
+                // player who goes looking for the line must find the same words in both places.
+                row.Leaves.Add(new GroundRow
+                {
+                    Name = english ? leaf.Segment : official ?? leaf.Segment,
+                    NameSecondary = official != null ? (english ? official : leaf.Segment) : null,
+                    Prefix = leaf.Prefix,
+                    Targets = [leaf.Prefix],
+                    Count = leaf.Count,
+                    SafeCount = leaf.SafeCount,
+                    FxCount = leaf.FxCount,
+                    MaterialCount = leaf.MaterialCount,
+                    Tip = $"{leaf.Prefix}\n" +
+                          $"安全 {leaf.SafeCount} · 特效 {leaf.FxCount} · 材质 {leaf.MaterialCount}"
+                });
+            }
+
+            // Every branch needs a tooltip of its own: when SyncGroundTree has nothing to explain it
+            // leaves this text alone, and an empty tip on the row that writes the line is worse than
+            // showing the prefix the player is about to read in the box beside it.
+            var tip = $"{row.Prefix}\n" +
+                      $"安全 {row.Leaves.Sum(l => l.SafeCount)} · " +
+                      $"特效 {row.Leaves.Sum(l => l.FxCount)} · " +
+                      $"材质 {row.Leaves.Sum(l => l.MaterialCount)}\n" +
+                      "勾这里写上面这一行,覆盖它名下所有目录";
+            row.Tip = branch.UnlistedCount > 0 ? $"{tip}\n(另有 {branch.UnlistedCount} 条路径不在此目录下)" : tip;
+            _groundBranches.Add(row);
+        }
+
+        _groundRoot = branches.Count == 0
+            ? null
+            : new GroundRow
+            {
+                Name = english ? "All ground effects" : "地面特效",
+                Targets = GroundEffectProtection.CategoryPrefixes.ToList(),
+                Count = _groundBranches.Sum(b => b.Count),
+                // The one rule nobody guesses: …/ground_effects does not reach …/ground_effects_v2,
+                // because a prefix only matches a path when the path continues with "/".
+                Tip = "一次写三行(整类各一行):\n" +
+                      string.Join('\n', GroundEffectProtection.CategoryPrefixes) +
+                      "\n「地面效果特效」那一行覆盖不到 _v2/_v3,所以顶层是三行而不是一行"
+            };
+
+        GroundRootPanel.DataContext = _groundRoot;
+        GroundRootPanel.IsVisible = branches.Count > 0;
+        GroundScroll.IsVisible = branches.Count > 0;
+        GroundEmptyText.IsVisible = branches.Count == 0;
+        SyncGroundTree();
+    }
+
+    /// <summary>Branch names are the category labels themselves — the same lookup the Effects tab
+    /// uses, so the two tabs can never disagree about what 「地面效果三版」 means.</summary>
+    private string GroundBranchName(string categoryId, bool english)
+    {
+        var category = _pack?.Categories.FirstOrDefault(c => c.Id.Equals(categoryId, StringComparison.OrdinalIgnoreCase));
+        if (category == null)
+            return categoryId;
+
+        var (primary, _) = category.LabelPair(english ? "en" : "zh");
+        return primary;
+    }
+
+    /// <summary>
+    /// Every tick in this tree is read back out of the ignore-list text — nothing else stores it.
+    /// A row whose protection comes from a line *above* it is drawn ticked and disabled, because
+    /// un-ticking a child cannot remove its parent's line; its tooltip names that line.
+    /// </summary>
+    private void SyncGroundTree()
+    {
+        var text = IgnoreBox?.Text ?? "";
+
+        foreach (var row in EnumerateGroundRows())
+        {
+            if (row.Prefix.Length == 0)
+            {
+                // The top node owns no single line — …/ground_effects does not cover …/_v2 — so it is
+                // always the aggregate of its three category lines, and always clickable.
+                var covered = row.Targets.Count(prefix => GroundEffectProtection.Covers(text, prefix));
+                row.IsEnabled = true;
+                row.IsChecked = covered == 0 ? false : covered < row.Targets.Count ? null : true;
+                continue;
+            }
+
+            if (GroundEffectProtection.Lists(text, row.Prefix))
+            {
+                row.IsEnabled = true;
+                row.IsChecked = true;
+                continue;
+            }
+
+            var covering = GroundEffectProtection.CoveringLine(text, row.Prefix);
+            if (covering != null)
+            {
+                // Protected from above: ticking is meaningless and un-ticking would have to delete
+                // someone else's line, so the box is drawn checked and dead, with the line named.
+                row.IsEnabled = false;
+                row.IsChecked = true;
+                row.Tip = $"{row.Prefix}\n由这一行覆盖,要放开请取消它(或在右边列表里删掉那行):\n{covering}";
+                continue;
+            }
+
+            if (row.Leaves.Count > 0)
+            {
+                var ticked = row.Leaves.Count(leaf => leaf.IsChecked == true);
+                row.IsEnabled = true;
+                row.IsChecked = ticked == 0 ? false : ticked == row.Leaves.Count ? true : null;
+                continue;
+            }
+
+            row.IsEnabled = true;
+            row.IsChecked = false;
+        }
+    }
+
+    /// <summary>Leaves first, then their branch, then the top node: a branch reports what its
+    /// children read, so the order is part of the derivation, not an optimisation.</summary>
+    private IEnumerable<GroundRow> EnumerateGroundRows()
+    {
+        foreach (var branch in _groundBranches)
+        {
+            foreach (var leaf in branch.Leaves)
+                yield return leaf;
+            yield return branch;
+        }
+
+        if (_groundRoot != null)
+            yield return _groundRoot;
+    }
+
+    private void OnGroundCheckClick(object? sender, RoutedEventArgs e)
+    {
+        if (_loading || sender is not CheckBox { DataContext: GroundRow row })
+            return;
+
+        // Click, not Checked/Unchecked: those fire on programmatic IsChecked writes too, and this
+        // tree is written from the text on every keystroke in the box beside it.
+        SetGroundProtection(row.Targets, row.IsChecked == true);
+    }
+
+    /// <summary>
+    /// The one place the tree edits the list. Ticks are collapsed to a single line per node — see
+    /// <see cref="GroundEffectProtection.Apply"/>. Deliberately does not touch ignore.txt: like every
+    /// other edit of this box, it reaches disk on 保存 or on the apply commit, and an abandoned apply
+    /// must not leave lines behind (MainWindow.axaml.cs:566-568 says the same about the old flow).
+    /// </summary>
+    private void SetGroundProtection(IReadOnlyList<string> prefixes, bool on)
+    {
+        var text = IgnoreBox.Text ?? "";
+        var next = GroundEffectProtection.ApplyMany(text, prefixes, on);
+        if (next == text)
+            return;
+
+        IgnoreBox.Text = next;
+        SetStatus(on
+            ? "已加入忽略列表;按「保存」才写进 ignore.txt,「应用」时会自动带上 / added to the list — press Save to write ignore.txt; Apply picks it up either way."
+            : "已从忽略列表移除;按「保存」才写进 ignore.txt / removed from the list — press Save to write ignore.txt.",
+            warn: true);
+    }
+
+    private void OnIgnoreTextChanged(object? sender, TextChangedEventArgs e)
+    {
+        SyncGroundTree();
     }
 
     private void RefreshProfiles()
@@ -1006,6 +1221,74 @@ public partial class MainWindow : Window
         PackText.Text = PackSummary();
         ApplyButton.IsEnabled = _pack != null && _rows.Any(r => r.IsSelected);
         RestoreButton.IsEnabled = status.State != null || status.CustomBundlesExist;
+        UpdateOrphanBundlePanel(status);
+    }
+
+    /// <summary>
+    /// The dead end has two halves, and the status line only shows one of them: bundles present,
+    /// no state. 应用 refuses and 还原 has no backup path, so the panel is the only way out that
+    /// does not require a terminal. Cheap to decide — it is exactly what status already knows.
+    /// </summary>
+    private void UpdateOrphanBundlePanel(StatusResult status)
+    {
+        var orphan = status.CustomBundlesExist && status.State == null;
+        OrphanBundlePanel.IsVisible = orphan;
+        if (!orphan)
+        {
+            OrphanCleanResult.Text = "";
+            return;
+        }
+
+        var files = _service.ListCustomBundleFiles(status.Game);
+        // The file names go on the header line, never on the result line: that one belongs to the
+        // cleanup, and overwriting it here would erase "I kept these because the index still
+        // references them" the moment the status refresh finishes — the exact sentence the user
+        // needs after clicking.
+        OrphanBundleText.Text = $"发现 {files.Count} 个遗留自定义 bundle,但没有状态文件" +
+                                (files.Count > 0 ? $"({string.Join(" · ", files.Select(System.IO.Path.GetFileName).Take(3))})" : "") +
+                                $" / {files.Count} leftover custom bundle file(s), no state file";
+    }
+
+    private async void OnDiscardOrphanBundles(object? sender, RoutedEventArgs e)
+    {
+        if (_game == null)
+            return;
+
+        // The scan that decides what is safe to delete reads every index record — a minute-scale job
+        // on a live client, so it runs off the UI thread behind the busy banner like apply does.
+        SetBusy(true, "检查 index 里的引用… / checking index references");
+        try
+        {
+            var result = await Task.Run(() => _service.DiscardOrphanCustomBundles(_game));
+            if (result.StateExists)
+            {
+                OrphanCleanResult.Text = "有状态文件,这里不动 —— 请用「还原」/ a state file exists: use Restore";
+            }
+            else if (result.Remaining.Count == 0)
+            {
+                OrphanCleanResult.Text = $"已清理 {result.Removed} 个,现在可以「生成规则包 → 应用」 / " +
+                                         $"{result.Removed} removed — build rules and Apply again";
+                AppendLog($"清理遗留自定义 bundle:{result.Removed} 个 / discarded {result.Removed} leftover custom bundle(s)");
+            }
+            else
+            {
+                OrphanCleanResult.Text = $"删了 {result.Removed} 个,但仍有 {result.Remaining.Count} 个被 index 引用," +
+                                         "说明客户端里还有生效的补丁 / removed " +
+                                         $"{result.Removed}, but {result.Remaining.Count} are still referenced — " +
+                                         "the client still has a live patch";
+            }
+
+            RefreshStatus();
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"清理失败 / cleanup failed: {ex.Message}", warn: true);
+            AppendLog($"清理遗留 bundle 失败,原始异常如下 / cleanup failed, raw exception follows: {ex}");
+        }
+        finally
+        {
+            SetBusy(false, null);
+        }
     }
 
     private string PackSummary()
@@ -1035,6 +1318,7 @@ public partial class MainWindow : Window
         BuildPackButton.IsEnabled = !busy;
         ApplyButton.IsEnabled = !busy && _game != null && _pack != null && _rows.Any(r => r.IsSelected);
         RestoreButton.IsEnabled = !busy && _game != null;
+        OrphanCleanButton.IsEnabled = !busy;
         if (message != null)
             StatusText.Text = message;
     }
@@ -1279,6 +1563,91 @@ public sealed class CategoryGroupRow : INotifyPropertyChanged
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
+}
+
+/// <summary>
+/// One row of the ground-effect tree on the Ignore tab — the top node, a category branch and an
+/// effect folder all share this type because they differ only in what they write:
+/// <see cref="Targets"/> is the set of ignore-list lines this row stands for (three for the top
+/// node, since the v1 folder name does not cover <c>_v2</c>; one for a branch or a folder).
+///
+/// There is deliberately no "is protected" field of its own: <c>IsChecked</c> is written by
+/// <c>SyncGroundTree</c> from the text of the ignore-list box and by nothing else, so the tree can
+/// never claim a protection the list does not carry. <see cref="IsEnabled"/> goes false when the
+/// protection comes from a line above the row — un-ticking that would mean deleting someone else's
+/// line, so the box is shown ticked and dead instead of offering a click that cannot work.
+/// </summary>
+public sealed class GroundRow : INotifyPropertyChanged
+{
+    private bool? _isChecked;
+    private bool _isEnabled = true;
+    private string _tip = "";
+
+    public string Name { get; init; } = "";
+
+    /// <summary>The folder name beside an official label, or the official label beside the folder
+    /// name in English mode. Null when the table has no name for it — then Name *is* the folder.</summary>
+    public string? NameSecondary { get; init; }
+    public bool HasSecondary => NameSecondary != null;
+
+    /// <summary>Empty only on the top node, which has no single line of its own.</summary>
+    public string Prefix { get; init; } = "";
+
+    public IReadOnlyList<string> Targets { get; init; } = [];
+    public int Count { get; init; }
+    public bool EnglishCounts { get; init; }
+
+    public int SafeCount { get; init; }
+    public int FxCount { get; init; }
+    public int MaterialCount { get; init; }
+
+    public ObservableCollection<GroundRow> Leaves { get; } = [];
+
+    public string CountText => EnglishCounts ? $"{Count} files" : $"{Count} 个文件";
+
+    /// <summary>Expander header for a branch: name and size on one line.</summary>
+    public string Header => $"{Name} · {CountText}";
+
+    public bool? IsChecked
+    {
+        get => _isChecked;
+        set
+        {
+            if (_isChecked == value)
+                return;
+            _isChecked = value;
+            OnPropertyChanged();
+        }
+    }
+
+    public bool IsEnabled
+    {
+        get => _isEnabled;
+        set
+        {
+            if (_isEnabled == value)
+                return;
+            _isEnabled = value;
+            OnPropertyChanged();
+        }
+    }
+
+    public string Tip
+    {
+        get => _tip;
+        set
+        {
+            if (_tip == value)
+                return;
+            _tip = value;
+            OnPropertyChanged();
+        }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    private void OnPropertyChanged([CallerMemberName] string? name = null)
+        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }
 
 /// <summary>One entry of the risk-tier combo box. Kept as an explicit item type so the box can
